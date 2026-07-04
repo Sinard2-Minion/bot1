@@ -1,32 +1,68 @@
 import discord
 import asyncio
 
-# Настройки ID ролей проверяющих (ВСТАВЬТЕ СВОИ ID РОЛЕЙ ИЗ ДИСКОРДА)
-ROLE_MAYOR = 112233445566778899        # Проверяющий смены данных / паспортов (например, Мэрия)
-ROLE_GOVERNMENT = 223344556677889900   # Проверяющий реестра имущества (например, Правительство)
-ROLE_LEADER = 334455667788990101       # Проверяющий отдела кадров (Лидеры/Замы фракций)
-ROLE_JUDGE = 445566778899010202        # Проверяющий судебного департамента (Судьи/Прокуроры)
+# --- НАСТРОЙКИ СЕРВЕРА ---
+AUDIT_LOG_CHANNEL_ID = 111222333444  # ВСТАВЬТЕ СЮДА ID КАНАЛА ДЛЯ ЛОГОВ АУДИТА
 
+# --- ДИНАМИЧЕСКИЙ СПИСОК КАТЕГОРИЙ (ПОД ВАШ ФОРУМ) ---
+CATEGORIES = {
+    "Заявление на гражданина": {
+        "description": "Жалобы, иски и заявления на правонарушителей",
+        "emoji": "⚖️",
+        "role_id": 112233445566778899  
+    },
+    "Получение лидерской должности": {
+        "description": "Подача анкет на лидерство в гос. структурах / бандах",
+        "emoji": "👑",
+        "role_id": 223344556677889900  
+    },
+    "Регистрация брак": {
+        "description": "Подача заявления в ЗАГС на заключение брака",
+        "emoji": "💍",
+        "role_id": 334455667788990101  
+    },
+    "Получение гражданства": {
+        "description": "Анкеты для миграционной службы / новичков",
+        "emoji": "🌍",
+        "role_id": 445566778899010202  
+    },
+    "Смена фамилии": {
+        "description": "Изменение личных паспортных данных (Пошлина: 1000$)",
+        "emoji": "👤",
+        "role_id": 556677889900112233  
+    },
+    "Регистрация бизнеса": {
+        "description": "Внесение коммерческого enterprise в гос. реестр",
+        "emoji": "💼",
+        "role_id": 667788990011223344  
+    },
+    "Лицензия": {
+        "description": "Заявления на получение лицензий (оружие, вождение, бизнес)",
+        "emoji": "🪪",
+        "role_id": 778899001122334455  
+    }
+}
+
+async def send_audit_log(guild, title, description, color):
+    channel = guild.get_channel(AUDIT_LOG_CHANNEL_ID)
+    if channel:
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.set_timestamp()
+        await channel.send(embed=embed)
+
+# --- КНОПКИ УПРАВЛЕНИЯ ВНУТРИ ТТИКЕТА ---
 class TicketControlView(discord.ui.View):
-    def __init__(self, ticket_type: str):
+    def __init__(self, ticket_type: str, creator: discord.Member):
         super().__init__(timeout=None)
-        self.ticket_type = ticket_type  # Категория тикета для фильтра прав
+        self.ticket_type = ticket_type
+        self.creator = creator
 
     def has_mod_permission(self, member: discord.Member) -> bool:
-        # Администраторы сервера могут модерировать любые тикеты без ограничений
         if member.guild_permissions.administrator:
             return True
-            
-        # Проверка прав по фракционным ролям
-        if self.ticket_type == "Смена личных данных" and member.get_role(ROLE_MAYOR):
+        cfg = CATEGORIES.get(self.ticket_type)
+        if cfg and member.get_role(cfg["role_id"]):
             return True
-        elif self.ticket_type == "Реестр имущества" and member.get_role(ROLE_GOVERNMENT):
-            return True
-        elif self.ticket_type == "Отдел кадров" and member.get_role(ROLE_LEADER):
-            return True
-        elif self.ticket_type == "Судебный департамент" and member.get_role(ROLE_JUDGE):
-            return True
-            
         return False
 
     @discord.ui.button(label="📥 Взять на рассмотрение", style=discord.ButtonStyle.primary, custom_id="take_ticket")
@@ -35,7 +71,6 @@ class TicketControlView(discord.ui.View):
             await interaction.response.send_message("❌ Вы не являетесь уполномоченным проверяющим для этой категории заявлений!", ephemeral=True)
             return
 
-        # Находим высшую отображаемую роль проверяющего для вывода должности
         top_role = "Администрация"
         for role in interaction.user.roles:
             if role.hoist and role.name != "@everyone":
@@ -53,10 +88,66 @@ class TicketControlView(discord.ui.View):
             color=discord.Color.orange()
         )
         
-        # Отключаем кнопку, чтобы тикет нельзя было взять повторно
         button.disabled = True
         await interaction.response.edit_message(view=self)
         await interaction.channel.send(embed=embed)
+
+        await send_audit_log(
+            interaction.guild, 
+            "⏳ Заявление взято на рассмотрение", 
+            f"**Тикет:** {interaction.channel.mention}\n**Проверяющий:** {interaction.user.mention}\n**Категория:** {self.ticket_type}\n**Автор:** {self.creator.mention}",
+            discord.Color.orange()
+        )
+
+    # --- НОВАЯ КНОПКА ПЕРЕДАЧИ СТАРШЕМУ СОСТАВУ ---
+    @discord.ui.button(label="🔀 Передать", style=discord.ButtonStyle.secondary, custom_id="forward_ticket")
+    async def forward_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user):
+            await interaction.response.send_message("❌ У вас нет прав для управления этим заявлением!", ephemeral=True)
+            return
+
+        cfg = CATEGORIES.get(self.ticket_type)
+        if not cfg:
+            await interaction.response.send_message("❌ Ошибка: категория не найдена в базе данных.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        base_role = guild.get_role(cfg["role_id"])
+        
+        if not base_role:
+            await interaction.response.send_message("❌ Ошибка: не удается найти базовую роль проверяющего на сервере.", ephemeral=True)
+            return
+
+        # Ищем роль, которая находится выше базовой по списку ролей Дискорда
+        higher_role = None
+        sorted_roles = sorted(guild.roles, key=lambda r: r.position)
+        
+        for role in sorted_roles:
+            if role.position > base_role.position and not role.managed and role.name != "@everyone":
+                higher_role = role
+                break
+
+        if higher_role:
+            # Выдаем права новой высшей роли на чтение этого тикета
+            await interaction.channel.set_permissions(higher_role, read_messages=True, send_messages=True)
+            
+            embed = discord.Embed(
+                title="🔀 Статус: Передано руководству",
+                description=f"Рассмотрение дела передано старшему составу: {higher_role.mention}.\nОжидайте ответа от руководства фракции.",
+                color=discord.Color.purple()
+            )
+            await interaction.channel.send(f"{higher_role.mention}, требуется ваше вмешательство!", embed=embed)
+            
+            # Пишем лог в аудит
+            await send_audit_log(
+                guild,
+                "🔀 Тикет перенаправлен роли выше",
+                f"**Канал:** {interaction.channel.mention}\n**Кто передал:** {interaction.user.mention}\n**Кому передано:** {higher_role.mention}\n**Автор тикета:** {self.creator.mention}",
+                discord.Color.purple()
+            )
+            await interaction.response.send_message("✅ Тикет успешно передан роли рангом выше!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Выше этой роли в списке сервера нет других фракционных ролей (высшая инстанция).", ephemeral=True)
 
     @discord.ui.button(label="🟢 Одобрить", style=discord.ButtonStyle.success, custom_id="approve_ticket")
     async def approve_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -65,6 +156,13 @@ class TicketControlView(discord.ui.View):
             return
             
         await interaction.response.send_message("✅ **Заявление официально ОДОБРЕНО.** Канал удалится через 5 секунд...", ephemeral=False)
+        
+        await send_audit_log(
+            interaction.guild, 
+            "✅ Заявление Одобрено", 
+            f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}\n**Автор:** {self.creator.mention}",
+            discord.Color.green()
+        )
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
@@ -75,6 +173,13 @@ class TicketControlView(discord.ui.View):
             return
             
         await interaction.response.send_message("❌ **Заявление ОТКЛОНЕНО.** Канал удалится через 5 секунд...", ephemeral=False)
+        
+        await send_audit_log(
+            interaction.guild, 
+            "❌ Заявление Отклонено", 
+            f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}\n**Автор:** {self.creator.mention}",
+            discord.Color.red()
+        )
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
@@ -84,5 +189,12 @@ class TicketControlView(discord.ui.View):
             await interaction.response.send_message("❌ У вас нет прав для закрытия этого тикета!", ephemeral=True)
             return
         await interaction.response.send_message("Тикет закрывается. Удаление через 5 секунд...", ephemeral=False)
+        
+        await send_audit_log(
+            interaction.guild, 
+            "🔒 Тикет закрыт", 
+            f"**Канал:** #{interaction.channel.name}\n**Модератор:** {interaction.user.mention}\n**Автор:** {self.creator.mention}",
+            discord.Color.dark_gray()
+        )
         await asyncio.sleep(5)
         await interaction.channel.delete()
