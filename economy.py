@@ -3,7 +3,6 @@ from discord import app_commands
 import random
 from database import get_user_data, update_balance
 
-# Функция, которую ищет main.py — имя должно совпадать точь-в-точь!
 def setup_economy_commands(tree: app_commands.CommandTree):
 
     @tree.command(name="баланс", description="Проверить свой текущий баланс денег")
@@ -12,9 +11,9 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         u_data = get_user_data(target.id)
         
         embed = discord.Embed(title=f"💰 Баланс {target.display_name}", color=discord.Color.green())
-        embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']:",} inline=False)
-        embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']:",} inline=False)
-        embed.add_field(name="💳 Всего:", value=f"${(u_data['cash'] + u_data['bank']办:,}", inline=False)
+        embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']}", inline=False)
+        embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']}", inline=False)
+        embed.add_field(name="💳 Всего:", value=f"${u_data['cash'] + u_data['bank']}", inline=False)
         await interaction.response.send_message(embed=embed)
 
     @tree.command(name="депозит", description="Положить наличные деньги в банк")
@@ -29,7 +28,7 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         
         update_balance(interaction.user.id, -сумма, "cash")
         update_balance(interaction.user.id, сумма, "bank")
-        await interaction.response.send_message(f"🏦 Вы успешно положили **${сумма:,}** на банковский счет.")
+        await interaction.response.send_message(f"🏦 Вы успешно положили **${сумма}** на банковский счет.")
 
     @tree.command(name="снять", description="Снять деньги с банковского счета")
     async def withdraw(interaction: discord.Interaction, сумма: int):
@@ -43,7 +42,7 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         
         update_balance(interaction.user.id, сумма, "cash")
         update_balance(interaction.user.id, -сумма, "bank")
-        await interaction.response.send_message(f"💵 Вы успешно сняли **${сумма:,}** наличными.")
+        await interaction.response.send_message(f"💵 Вы успешно сняли **${сумма}** наличными.")
 
     @tree.command(name="работа", description="Пойти на безопасную работу")
     @app_commands.checks.cooldown(1, 1800, key=lambda i: (i.user.id))
@@ -52,18 +51,6 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         jobs = ["курьером", "офисным клерком", "водителем автобуса", "программистом", "автомехаником", "поваром"]
         update_balance(interaction.user.id, reward, "cash")
         await interaction.response.send_message(f"👔 Вы отработали смену **{random.choice(jobs)}** и заработали **${reward}**.")
-
-    @tree.command(name="подработка", description="Попытаться заработать лёгкие деньги (Небольшой риск)")
-    @app_commands.checks.cooldown(1, 3600, key=lambda i: (i.user.id))
-    async def slut(interaction: discord.Interaction):
-        if random.randint(1, 100) <= 40:
-            fine = random.randint(150, 300)
-            update_balance(interaction.user.id, -fine, "cash")
-            await interaction.response.send_message(f"💃 Вас поймала полиция за незаконную уличную деятельность! Вы выплатили штраф в размере **${fine}**.")
-        else:
-            reward = random.randint(300, 700)
-            update_balance(interaction.user.id, reward, "cash")
-            await interaction.response.send_message(f"💸 Ваша авантюра удалась! Вы получили **${reward}** лёгких денег от щедрого незнакомца.")
 
     @tree.command(name="криминал", description="Совершить серьезное преступление (Высокий риск)")
     @app_commands.checks.cooldown(1, 10800, key=lambda i: (i.user.id))
