@@ -74,9 +74,9 @@ async def txt_balance(ctx, member: discord.Member = None):
     target = member or ctx.author
     u_data = get_user_data(target.id)
     embed = discord.Embed(title=f"💰 Баланс {target.display_name}", color=discord.Color.green())
-    embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']:,}", inline=False)
-    embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']:,}", inline=False)
-    embed.add_field(name="💳 Всего:", value=f"${(u_data['cash'] + u_data['bank']办:,}", inline=False)
+    embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']}", inline=False)
+    embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']}", inline=False)
+    embed.add_field(name="💳 Всего:", value=f"${u_data['cash'] + u_data['bank']}", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command(name="депозит", aliases=["dep"])
@@ -90,7 +90,7 @@ async def txt_deposit(ctx, amount: int):
         return
     update_balance(ctx.author.id, -amount, "cash")
     update_balance(ctx.author.id, amount, "bank")
-    await ctx.send(f"🏦 Вы успешно положили **${amount:,}** на банковский счет.")
+    await ctx.send(f"🏦 Вы успешно положили **${amount}** на банковский счет.")
 
 @bot.command(name="снять", aliases=["with"])
 async def txt_withdraw(ctx, amount: int):
@@ -103,7 +103,7 @@ async def txt_withdraw(ctx, amount: int):
         return
     update_balance(ctx.author.id, amount, "cash")
     update_balance(ctx.author.id, -amount, "bank")
-    await ctx.send(f"💵 Вы успешно сняли **${amount:,}** наличными.")
+    await ctx.send(f"💵 Вы успешно сняли **${amount}** наличными.")
 
 # --- КОМАНДЫ ЗАРАБОТКА И КРИМИНАЛА ---
 
@@ -161,7 +161,7 @@ async def txt_give(ctx, member: discord.Member, amount: int):
         await ctx.send("❌ Сумма должна быть больше нуля!")
         return
     update_balance(member.id, amount, "cash")
-    await ctx.send(f"✅ Администратор выдал **${amount:,}** игроку {member.mention}.")
+    await ctx.send(f"✅ Администратор выдал **${amount}** игроку {member.mention}.")
 
 @bot.command(name="меню", aliases=["тикет", "панель"])
 @commands.has_permissions(administrator=True)
