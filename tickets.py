@@ -1,16 +1,6 @@
 import discord
-import asyncio
 from database import get_user_data, update_balance
-
-class TicketControlView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Тикет будет удален через 5 секунд...", ephemeral=False)
-        await asyncio.sleep(5)
-        await interaction.channel.delete()
+from ticket_views import TicketControlView, ROLE_MAYOR, ROLE_GOVERNMENT, ROLE_LEADER, ROLE_JUDGE
 
 class ApplicationDropdown(discord.ui.Select):
     def __init__(self):
@@ -25,8 +15,9 @@ class ApplicationDropdown(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         guild = interaction.guild
         user = interaction.user
-        chosen = self.values[0]
+        chosen = self.values
 
+        # Логика списания пошлины для смены личных данных
         if chosen == "Смена личных данных":
             u_data = get_user_data(user.id)
             if u_data["cash"] < 1000:
@@ -37,20 +28,40 @@ class ApplicationDropdown(discord.ui.Select):
         else:
             payment_status = "🆓 Подача в эту категорию бесплатна."
 
+        # Базовые права доступа к новому тикету (Игрок и Бот)
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
+        # Распределяем доступ к тикету для конкретной роли проверяющей фракции
+        ping_role_id = None
+        if chosen == "Смена личных данных":
+            ping_role_id = ROLE_MAYOR
+        elif chosen == "Реестр имущества":
+            ping_role_id = ROLE_GOVERNMENT
+        elif chosen == "Отдел кадров":
+            ping_role_id = ROLE_LEADER
+        elif chosen == "Судебный департамент":
+            ping_role_id = ROLE_JUDGE
+
+        # Выдаем права фракционной роли, если она настроена
+        if ping_role_id:
+            role_obj = guild.get_role(ping_role_id)
+            if role_obj:
+                overwrites[role_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        # Создаем скрытый текстовый канал на сервере
         channel_name = f"заявление-{user.name}"
         ticket_channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
 
+        # Подбираем официальный РП-бланк
         blank_text = ""
         if chosen == "Смена личных данных":
             blank_text = f"```ini\n[ ⚖️ ОФИЦИАЛЬНЫЙ БЛАНК: ИЗМЕНЕНИЕ ЛИЧНЫХ ДАННЫХ ]\n\n1. Ваш текущий Дискорд-аккаунт: @{user.name}\n2. Ваш текущий РП-ник (Имя_Фамилия): \n3. Новый желаемый РП-ник (Имя_Фамилия): \n4. Причина смены данных (РП-ситуация): \n5. Статус оплаты: {payment_status}\n\n==================================================\n[ Скопируйте, заполните и отправьте в этот чат ]\n```"
         elif chosen == "Реестр имущества":
-            blank_text = "```ini\n[ 🏦 ОФИЦИАЛЬНЫFF БЛАНК: РЕГИСТРАЦИЯ ПРАВ СОБСТВЕННОСТИ ]\n\n1. Имя и Фамилия законного владельца: \n2. Тип имущества (Дом / Бизнес): \n3. Номер или адрес имущества (Например: Дом №042): \n4. Будут ли в доме проживать сожители?: \n5. Скриншот покупки/владения домом:\n\n==================================================\n[ Скопируйте, заполните и отправьте в этот чат ]\n```"
+            blank_text = "```ini\n[ 🏦 ОФИЦИАЛЬНЫЙ БЛАНК: РЕГИСТРАЦИЯ ПРАВ СОБСТВЕННОСТИ ]\n\n1. Имя и Фамилия законного владельца: \n2. Тип имущества (Дом / Бизнес): \n3. Номер или адрес имущества (Например: Дом №042): \n4. Будут ли в доме проживать сожители?:\n5. Скриншот покупки/владения домом:\n\n==================================================\n[ Скопируйте, заполните и отправьте в этот чат ]\n```"
         elif chosen == "Отдел кадров":
             blank_text = "```ini\n[ 📁 ОФИЦИАЛЬНЫЙ БЛАНК: ЗАЯВЛЕНИЕ НА ТРУДОУСТРОЙСТВО ]\n\n1. Ваши РП Имя и Фамилия: \n2. В какую фракцию подаёте заявление: \n3. На какую должность/ранг претендуете: \n4. Краткая РП-биография персонажа (2-3 предложения):\n\n==================================================\n[ Скопируйте, заполните и отправьте в этот чат ]\n```"
         elif chosen == "Судебный департамент":
@@ -58,12 +69,18 @@ class ApplicationDropdown(discord.ui.Select):
 
         embed = discord.Embed(
             title=f"✉️ Тикет открыт: {chosen}",
-            description=f"Приветствуем, {user.mention}!\n{payment_status}\n\nНиже предоставлен официальный бланк. Заполните его прямо здесь.",
+            description=f"Приветствуем, {user.mention}!\n{payment_status}\n\nНиже предоставлен официальный бланк. Заполните его прямо здесь.\n\n**Для проверяющих:** нажмите кнопку «📥 Взять на рассмотрение» перед проверкой.",
             color=discord.Color.blue()
         )
         
-        await ticket_channel.send(embed=embed, view=TicketControlView())
+        # Отправляем эмбед и подключаем пульт кнопок, передавая туда тип заявления
+        await ticket_channel.send(embed=embed, view=TicketControlView(chosen))
         await ticket_channel.send(blank_text)
+        
+        # Автоматически пингуем нужную фракцию (пингующее сообщение удалится через 5 секунд для чистоты чата)
+        if ping_role_id:
+            await ticket_channel.send(f"<@&{ping_role_id}>, поступило новое заявление!", delete_after=5)
+            
         await interaction.response.send_message(f"✅ Ваш тикет успешно создан: {ticket_channel.mention}", ephemeral=True)
 
 class DropdownView(discord.ui.View):
