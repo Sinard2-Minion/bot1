@@ -36,11 +36,11 @@ async def setup_menu_slash(interaction: discord.Interaction):
         description="Приветствуем вас в едином центре обработки заявлений граждан!\n\n👇 **Выберите необходимый тип заявления в меню ниже:**",
         color=discord.Color.gold()
     )
-    await interaction.response.send_message("Меню создано!", ephemeral=True)
+    await interaction.response.send_message("Menus создано!", ephemeral=True)
     await interaction.channel.send(embed=embed, view=DropdownView())
 
-# --- ОБРАБОТКА ОШИБОК ДЛЯ СЛЭШ-КОМАНД ---
-@bot.tree.command_error
+# --- ОБРАБОТКА ОШИБОК ДЛЯ СЛЭШ-КОМАНД (ИСПРАВЛЕНО) ---
+@bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CommandOnCooldown):
         minutes = int(error.retry_after // 60)
