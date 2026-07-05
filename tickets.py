@@ -1,60 +1,42 @@
 import discord
 from database import get_user_data, update_balance
-from ticket_views import TicketControlView, CATEGORIES, send_audit_log
+from ticket_config import CATEGORIES
+from ticket_views import TicketControlView, send_audit_log
 
-# --- КЛАСС ВСПЛЫВАЮЩЕГО ОКНА (МОДАЛКИ) ---
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, ticket_type: str):
-        # Заголовок всплывающего окна
-        super().__init__(title=f"Бланк: {ticket_type}")
+        super().__init__(title=ticket_type[:45])
         self.ticket_type = ticket_type
+        self.fields_inputs = {}
 
-        # Добавляем текстовые поля для ввода (максимум 5 полей в одной модалке)
-        self.rp_name = discord.ui.TextInput(
-            label="Ваш РП ник (Имя_Фамилия)",
-            placeholder="Например: M1lton_James",
-            required=True,
-            max_length=50
-        )
+        self.rp_name = discord.ui.TextInput(label="Ваш РП ник (Имя_Фамилия)", placeholder="M1lton_James", required=True, max_length=50)
         self.add_item(self.rp_name)
 
-        self.details = discord.ui.TextInput(
-            label="Суть вашего заявления / обращения",
-            placeholder="Подробно опишите вашу ситуацию или цель подачи...",
-            style=discord.TextStyle.paragraph, # Длинное поле
-            required=True,
-            max_length=1000
-        )
-        self.add_item(self.details)
-
-        self.proofs = discord.ui.TextInput(
-            label="Доказательства (если требуются)",
-            placeholder="Ссылки на скриншоты, видеозаписи или прочерк '—'",
-            required=False,
-            max_length=200
-        )
-        self.add_item(self.proofs)
+        cfg = CATEGORIES.get(ticket_type)
+        if cfg and "fields" in cfg:
+            for idx, f_cfg in enumerate(cfg["fields"]):
+                style = discord.TextStyle.paragraph if f_cfg["style"] == "paragraph" else discord.TextStyle.short
+                input_item = discord.ui.TextInput(label=f_cfg["label"][:45], placeholder=f_cfg["placeholder"][:100], style=style, required=f_cfg["required"])
+                self.fields_inputs[f"field_{idx}"] = input_item
+                self.add_item(input_item)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         user = interaction.user
         cfg = CATEGORIES.get(self.ticket_type)
 
-        # Обработка пошлины для смены личных данных
         if self.ticket_type == "Смена фамилии":
             u_data = get_user_data(user.id)
             if u_data["cash"] < 1000:
-                await interaction.response.send_message("❌ У вас недостаточно наличных денег для оплаты гос. пошлины ($1,000)!", ephemeral=True)
+                await interaction.response.send_message("❌ Недостаточно денег для пошлины ($1,000)!", ephemeral=True)
                 return
             update_balance(user.id, -1000, "cash")
-            payment_status = "✅ Гос. пошлина ($1,000) успешно списана с вашего баланса!"
+            pay_status = "✅ Гос. пошлина ($1,000) успешно списана!"
         else:
-            payment_status = "🆓 Подача в эту категорию бесплатна."
+            pay_status = "🆓 Бесплатная подача заявления."
 
-        # Отвечаем игроку сразу, чтобы Discord не выдал ошибку
-        await interaction.response.send_message(f"⌛ Создаем ваше заявление в системе... Пожалуйста, подождите.", ephemeral=True)
+        await interaction.response.send_message(f"⌛ Создаем ваше заявление в системе...", ephemeral=True)
 
-        # Настраиваем права доступа к будущему тикету
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -64,55 +46,30 @@ class ApplicationModal(discord.ui.Modal):
         ping_role_id = cfg["role_id"] if cfg else None
         if ping_role_id:
             role_obj = guild.get_role(ping_role_id)
-            if role_obj:
-                overwrites[role_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if role_obj: overwrites[role_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-        # Создаем текстовый канал на основе имени пользователя
-        channel_name = f"заявление-{user.name}"
-        ticket_channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+        ticket_channel = await guild.create_text_channel(name=f"заявление-{user.name}", overwrites=overwrites)
 
-        # Формируем красивую карточку (Embed) с заполненными ответами игрока
-        embed_report = discord.Embed(
-            title=f"📋 НОВОЕ ЗАЯВЛЕНИЕ: {self.ticket_type.upper()}",
-            color=discord.Color.blue()
-        )
-        embed_report.add_field(name="👤 Автор заявления:", value=user.mention, inline=True)
-        embed_report.add_field(name="🆔 Discord Никнейм:", value=f"`{user.name}`", inline=True)
-        embed_report.add_field(name="🎭 РП Имя персонажа:", value=f"**{self.rp_name.value}**", inline=False)
-        embed_report.add_field(name="📝 Содержание / Описание:", value=self.details.value, inline=False)
-        embed_report.add_field(name="🔗 Доказательства:", value=self.proofs.value or "*Не предоставлены*", inline=False)
-        embed_report.add_field(name="💳 Финансовый статус:", value=payment_status, inline=False)
-        embed_report.set_footer(text="Управляйте статусом дела с помощью пульта кнопок ниже.")
+        embed = discord.Embed(title=f"📋 НОВОЕ ЗАЯВЛЕНИЕ: {self.ticket_type.upper()}", color=discord.Color.blue())
+        embed.add_field(name="👤 Автор заявления:", value=user.mention, inline=True)
+        embed.add_field(name="🎭 РП Никнейм персонажа:", value=f"**{self.rp_name.value}**", inline=False)
 
-        # Отправляем оформленный бланк и подключаем пульт кнопок
-        await ticket_channel.send(embed=embed_report, view=TicketControlView(self.ticket_type, user))
-        
-        if ping_role_id:
-            await ticket_channel.send(f"<@&{ping_role_id}>, поступило новое заявление на проверку!", delete_after=5)
+        for _, input_item in self.fields_inputs.items():
+            embed.add_field(name=f"📝 {input_item.label}:", value=input_item.value or "*Не заполнено*", inline=False)
 
-        # Пишем лог в аудит администрации
-        await send_audit_log(
-            guild, 
-            "✉️ Открыто новое РП-заявление", 
-            f"**Пользователь:** {user.mention}\n**Категория:** {self.ticket_type}\n**Канал:** {ticket_channel.mention}",
-            discord.Color.blue()
-        )
+        embed.add_field(name="💳 Оплата:", value=pay_status, inline=False)
 
-# --- ВЫПАДАЮЩЕЕ МЕНЮ ВЫБОРА КАТЕГОРИИ ---
+        await ticket_channel.send(embed=embed, view=TicketControlView(self.ticket_type, user))
+        if ping_role_id: await ticket_channel.send(f"<@&{ping_role_id}>, новое заявление!", delete_after=5)
+        await send_audit_log(guild, "✉️ Открыт новый РП-тикет", f"**Пользователь:** {user.mention}\n**Категория:** {self.ticket_type}\n**Канал:** {ticket_channel.mention}", discord.Color.blue())
+
 class ApplicationDropdown(discord.ui.Select):
     def __init__(self):
-        options = []
-        for name, cfg in CATEGORIES.items():
-            options.append(discord.SelectOption(label=name, description=cfg["description"], emoji=cfg["emoji"]))
-            
+        options = [discord.SelectOption(label=n, description=c["description"][:100], emoji=c["emoji"]) for n, c in CATEGORIES.items()]
         super().__init__(placeholder="Выберите необходимый тип заявления...", min_values=1, max_values=1, options=options, custom_id="app_dropdown")
 
     async def callback(self, interaction: discord.Interaction):
-        chosen = self.values[0]
-        
-        # Вместо создания канала бот моментально выдает всплывающее окно на экран
-        modal = ApplicationModal(chosen)
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(ApplicationModal(self.values[0]))
 
 class DropdownView(discord.ui.View):
     def __init__(self):
