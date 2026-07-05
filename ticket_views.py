@@ -1,5 +1,7 @@
 import discord
 import asyncio
+import random
+from datetime import datetime
 from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES, VERDICTS
 
 async def send_audit_log(guild, title, description, color):
@@ -13,11 +15,12 @@ async def send_audit_log(guild, title, description, color):
 
 class VerdictModal(discord.ui.Modal):
     def __init__(self, ticket_type: str, creator_id: int):
-        v_cfg = VERDICTS.get(ticket_type, {"label": "РП-примечание", "placeholder": "Введите данные...", "db_field": None})
-        super().__init__(title="Реестр гос. документов")
+        v_cfg = VERDICTS.get(ticket_type, {"label": "РП-примечание", "placeholder": "Введите данные...", "db_field": None, "authority": "Гос. Орган"})
+        super().__init__(title="Заполнение гос. реестра")
         self.ticket_type = ticket_type
         self.creator_id = creator_id
         self.db_field = v_cfg["db_field"]
+        self.authority = v_cfg.get("authority", "Гос. Орган")
 
         self.verdict_input = discord.ui.TextInput(label=v_cfg["label"][:45], placeholder=v_cfg["placeholder"][:100], required=True, max_length=100)
         self.add_item(self.verdict_input)
@@ -29,17 +32,40 @@ class VerdictModal(discord.ui.Modal):
         creator = guild.get_member(self.creator_id)
         c_mention = creator.mention if creator else f"ID: {self.creator_id}"
 
+        # Авто-генерация даты и номера документа
+        current_date = datetime.now().strftime("%d.%m.%Y")
+        doc_num = f"{random.randint(10, 99)} {random.randint(1000, 9999)}"
+
+        # Формируем полный структурированный РП-документ
+        full_doc_data = {
+            "info": val,
+            "date": current_date,
+            "number": doc_num,
+            "authority": self.authority
+        }
+
         if self.db_field and self.creator_id != 0:
-            formatted_val = f"🟩 {val}" if self.ticket_type != "Регистрация брака" else val
-            update_rp_status(self.creator_id, self.db_field, formatted_val)
+            update_rp_status(self.creator_id, self.db_field, full_doc_data)
 
         embed = discord.Embed(
-            title="📜 ГОСУДАРСТВЕННЫЙ УКАЗ / ВЕРДИКТ",
-            description=f"**Заявление гражданина было официально ОДОБРЕНО.**\n\n👤 **Заявитель:** {c_mention}\n🤵 **Проверяющий:** {user.mention}\n📦 **Категория:** `{self.ticket_type}`\n📝 **Внесено в базу:**\n> *{val}*\n\nДанные сохранены в `/профиль`. Канал удалится через 10 секунд...",
+            title=f"📜 ОФИЦИАЛЬНЫЙ РЕЕСТР: {self.ticket_type.upper()}",
+            description=(
+                f"**Заявление было официально ОДОБРЕНО.**\n\n"
+                f"👤 **Заявитель:** {c_mention}\n"
+                f"🤵 **Проверяющий:** {user.mention}\n"
+                f"🏛️ **Кем выдано:** `{self.authority}`\n"
+                f"📅 **Дата выдачи:** `{current_date}`\n"
+                f"🔢 **Номер документа:** `№{doc_num}`\n\n"
+                f"📝 **Внесённые данные:**\n> *{val}*\n\n"
+                f"Документы занесены в систему. Канал удалится через 10 секунд..."
+            ),
             color=discord.Color.green()
         )
+        if creator:
+            embed.set_thumbnail(url=creator.display_avatar.url)
+
         await interaction.channel.send(embed=embed)
-        await send_audit_log(guild, "✅ Одобрено (Вручную)", f"**Канал:** #{interaction.channel.name}\n**Кто:** {user.mention}\n**Автор:** {c_mention}\n**Что внесено:** {val}", discord.Color.green())
+        await send_audit_log(guild, "✅ Одобрено и заполнено", f"**Канал:** #{interaction.channel.name}\n**Кто:** {user.mention}\n**Орган:** {self.authority}\n**Что внесено:** {val}", discord.Color.green())
         await asyncio.sleep(10)
         await interaction.channel.delete()
 
@@ -66,10 +92,10 @@ class CustomRoleDropdown(discord.ui.Select):
         c_mention = creator.mention if creator else f"ID: {self.creator_id}"
 
         await interaction.channel.set_permissions(chosen_role, read_messages=True, send_messages=True)
-        embed = discord.Embed(title="🔀 Статус: Дело перенаправлено", description=f"Рассмотрение заявления передано структуре: {chosen_role.mention}.", color=discord.Color.purple())
+        embed = discord.Embed(title="🔀 Status: Перенаправлено", description=f"Рассмотрение заявления передано структуре: {chosen_role.mention}.", color=discord.Color.purple())
         await interaction.message.delete()
         await interaction.channel.send(f"{chosen_role.mention}, требуется ваша проверка!", embed=embed)
-        await send_audit_log(guild, "🔀 Тикет перенаправлен", f"**Канал:** #{interaction.channel.name}\n**Кто:** {interaction.user.mention}\n**Кому:** {chosen_role.mention}\n**Автор:** {c_mention}", discord.Color.purple())
+        await send_audit_log(guild, "🔀 Тикет перенаправлен", f"**Канал:** #{interaction.channel.name}\n**Кто:** {interaction.user.mention}\n**Кому:** {chosen_role.mention}", discord.Color.purple())
 
 class CustomRoleSelectView(discord.ui.View):
     def __init__(self, guild: discord.Guild, ticket_type: str, creator_id: int):
@@ -98,21 +124,17 @@ class TicketControlView(discord.ui.View):
         button.disabled = True
         await interaction.response.edit_message(view=self)
         await interaction.channel.send(embed=embed)
-        await send_audit_log(interaction.guild, "⏳ Тикет взят в работу", f"**Канал:** {interaction.channel.mention}\n**Кто:** {interaction.user.mention}\n**Автор:** {c_mention}", discord.Color.orange())
+        await send_audit_log(interaction.guild, "⏳ Тикет взят в работу", f"**Канал:** {interaction.channel.mention}\n**Кто:** {interaction.user.mention}", discord.Color.orange())
 
     @discord.ui.button(label="🔀 Передать", style=discord.ButtonStyle.secondary, custom_id="forward_ticket_btn")
     async def forward_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_mod_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав управления!", ephemeral=True)
-            return
+        if not self.has_mod_permission(interaction.user): return
         view = CustomRoleSelectView(interaction.guild, self.ticket_type, self.creator_id)
         await interaction.response.send_message("👇 Выберите роль из списка ниже для передачи дела:", view=view, ephemeral=True)
 
     @discord.ui.button(label="🟢 Одобрить", style=discord.ButtonStyle.success, custom_id="approve_ticket_btn")
     async def approve_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_mod_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав одобрения!", ephemeral=True)
-            return
+        if not self.has_mod_permission(interaction.user): return
         await interaction.response.send_modal(VerdictModal(self.ticket_type, self.creator_id))
 
     @discord.ui.button(label="🔴 Отклонить", style=discord.ButtonStyle.secondary, custom_id="deny_ticket_btn")
@@ -120,7 +142,7 @@ class TicketControlView(discord.ui.View):
         if not self.has_mod_permission(interaction.user): return
         c_mention = f"<@{self.creator_id}>" if self.creator_id != 0 else "Автор заявления"
         await interaction.response.send_message("❌ **Заявление ОТКЛОНЕНО. Канал удалится через 5 секунд...**")
-        await send_audit_log(interaction.guild, "❌ Отклонено", f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}\n**Автор:** {c_mention}", discord.Color.red())
+        await send_audit_log(interaction.guild, "❌ Отклонено", f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}", discord.Color.red())
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
@@ -129,6 +151,6 @@ class TicketControlView(discord.ui.View):
         if not self.has_mod_permission(interaction.user): return
         c_mention = f"<@{self.creator_id}>" if self.creator_id != 0 else "Автор заявления"
         await interaction.response.send_message("🔒 **Тикет закрывается. Удаление через 5 секунд...**")
-        await send_audit_log(interaction.guild, "🔒 Тикет закрыт", f"**Канал:** #{interaction.channel.name}\n**Модератор:** {interaction.user.mention}\n**Автор:** {c_mention}", discord.Color.dark_gray())
+        await send_audit_log(interaction.guild, "🔒 Тикет закрыт", f"**Канал:** #{interaction.channel.name}\n**Модератор:** {interaction.user.mention}", discord.Color.dark_gray())
         await asyncio.sleep(5)
         await interaction.channel.delete()
