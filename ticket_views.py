@@ -15,57 +15,46 @@ async def send_audit_log(guild, title, description, color):
 
 class VerdictModal(discord.ui.Modal):
     def __init__(self, ticket_type: str, creator_id: int):
-        v_cfg = VERDICTS.get(ticket_type, {"label": "РП-примечание", "placeholder": "Введите данные...", "db_field": None, "authority": "Гос. Орган"})
         super().__init__(title="Заполнение гос. реестра")
-        self.ticket_type = ticket_type
-        self.creator_id = creator_id
-        self.db_field = v_cfg["db_field"]
-        self.authority = v_cfg.get("authority", "Гос. Орган")
+        self.ticket_type, self.creator_id = ticket_type, creator_id
+        v_cfg = VERDICTS.get(ticket_type, {"fields": [{"label": "РП-Вердикт / Примечание", "placeholder": "Введите текст вердикта..."}], "db_field": None, "authority": "Государственные Структуры"})
+        self.db_field = v_cfg.get("db_field")
+        self.authority = v_cfg.get("authority", "Государственные Структуры")
+        self.inputs = []
 
-        self.verdict_input = discord.ui.TextInput(label=v_cfg["label"][:45], placeholder=v_cfg["placeholder"][:100], required=True, max_length=100)
-        self.add_item(self.verdict_input)
+        fields_list = v_cfg.get("fields", [{"label": "РП-Вердикт / Примечание", "placeholder": "Введите текст вердикта..."}])
+        for idx, f_info in enumerate(fields_list):
+            txt_input = discord.ui.TextInput(label=f_info["label"][:45], placeholder=f_info["placeholder"][:100], required=True, max_length=100, custom_id=f"v_f_{idx}")
+            self.inputs.append(txt_input)
+            self.add_item(txt_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         from database import update_rp_status
-        guild, user, val = interaction.guild, interaction.user, self.verdict_input.value
+        guild, user = interaction.guild, interaction.user
         creator = guild.get_member(self.creator_id)
         c_mention = creator.mention if creator else f"ID: {self.creator_id}"
+        current_date, doc_num = datetime.now().strftime("%d.%m.%Y"), f"{random.randint(10, 99)} {random.randint(1000, 9999)}"
+        clean_name = user.display_name.replace(" ", "_")
+        signature = f"{clean_name[:1].upper()}.{clean_name.split('_')[-1][:10] if '_' in clean_name else clean_name[:10]} ✍️"
 
-        # Авто-генерация даты и номера документа
-        current_date = datetime.now().strftime("%d.%m.%Y")
-        doc_num = f"{random.randint(10, 99)} {random.randint(1000, 9999)}"
+        # Сохранение структуры документа
+        doc_data = {"date": current_date, "number": doc_num, "authority": self.authority, "signature": signature}
+        embed = discord.Embed(title=f"📜 ОФИЦИАЛЬНЫЙ РЕЕСТР: {self.ticket_type.upper()}", color=discord.Color.green())
+        embed.add_field(name="🏛️ Выдано ведомством:", value=f"`{self.authority}`", inline=False)
+        embed.add_field(name="📅 Дата утверждения:", value=f"`{current_date}`", inline=True)
+        embed.add_field(name="🔢 Серийный номер:", value=f"`№{doc_num}`", inline=True)
 
-        # Формируем полный структурированный РП-документ
-        full_doc_data = {
-            "info": val,
-            "date": current_date,
-            "number": doc_num,
-            "authority": self.authority
-        }
+        for inp in self.inputs:
+            doc_data[inp.label] = inp.value
+            embed.add_field(name=f"📝 {inp.label}:", value=f"**{inp.value}**", inline=False)
 
-        if self.db_field and self.creator_id != 0:
-            update_rp_status(self.creator_id, self.db_field, full_doc_data)
-
-        embed = discord.Embed(
-            title=f"📜 ОФИЦИАЛЬНЫЙ РЕЕСТР: {self.ticket_type.upper()}",
-            description=(
-                f"**Заявление было официально ОДОБРЕНО.**\n\n"
-                f"👤 **Заявитель:** {c_mention}\n"
-                f"🤵 **Проверяющий:** {user.mention}\n"
-                f"🏛️ **Кем выдано:** `{self.authority}`\n"
-                f"📅 **Дата выдачи:** `{current_date}`\n"
-                f"🔢 **Номер документа:** `№{doc_num}`\n\n"
-                f"📝 **Внесённые данные:**\n> *{val}*\n\n"
-                f"Документы занесены в систему. Канал удалится через 10 секунд..."
-            ),
-            color=discord.Color.green()
-        )
-        if creator:
-            embed.set_thumbnail(url=creator.display_avatar.url)
+        embed.add_field(name="专 Личная подпись должностного лица:", value=f"`{signature}`", inline=False)
+        if creator: embed.set_thumbnail(url=creator.display_avatar.url)
+        if self.db_field and self.creator_id != 0: update_rp_status(self.creator_id, self.db_field, doc_data)
 
         await interaction.channel.send(embed=embed)
-        await send_audit_log(guild, "✅ Одобрено и заполнено", f"**Канал:** #{interaction.channel.name}\n**Кто:** {user.mention}\n**Орган:** {self.authority}\n**Что внесено:** {val}", discord.Color.green())
+        await send_audit_log(guild, "✅ Одобрено", f"**Тикет:** #{interaction.channel.name}\n**Кто:** {user.mention}\n**Автор:** {c_mention}\n**Подпись:** {signature}", discord.Color.green())
         await asyncio.sleep(10)
         await interaction.channel.delete()
 
@@ -78,24 +67,18 @@ class CustomRoleDropdown(discord.ui.Select):
             if max_role and role.position < max_role.position:
                 if len(options) >= 25: break
                 options.append(discord.SelectOption(label=role.name, value=str(role.id), description=f"Позиция: {role.position}"))
-        if not options: options.append(discord.SelectOption(label="Нет доступных ролей", value="0"))
-        super().__init__(placeholder="Выберите роль для передачи...", min_values=1, max_values=1, options=options, custom_id="custom_role_forward")
+        if not options: options.append(discord.SelectOption(label="Нет ролей", value="0"))
+        super().__init__(placeholder="Выберите роль для передачи...", min_values=1, max_values=1, options=options, custom_id="c_role_forward")
         self.ticket_type, self.creator_id = ticket_type, creator_id
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if self.values == "0": return
-        guild = interaction.guild
-        chosen_role = guild.get_role(int(self.values))
-        if not chosen_role: return
-        creator = guild.get_member(self.creator_id)
-        c_mention = creator.mention if creator else f"ID: {self.creator_id}"
-
+        if self.values == "0" or not interaction.guild.get_role(int(self.values)): return
+        chosen_role = interaction.guild.get_role(int(self.values))
         await interaction.channel.set_permissions(chosen_role, read_messages=True, send_messages=True)
-        embed = discord.Embed(title="🔀 Status: Перенаправлено", description=f"Рассмотрение заявления передано структуре: {chosen_role.mention}.", color=discord.Color.purple())
+        embed = discord.Embed(title="🔀 Статус: Перенаправлено", description=f"Рассмотрение заявления передано структуре: {chosen_role.mention}.", color=discord.Color.purple())
         await interaction.message.delete()
         await interaction.channel.send(f"{chosen_role.mention}, требуется ваша проверка!", embed=embed)
-        await send_audit_log(guild, "🔀 Тикет перенаправлен", f"**Канал:** #{interaction.channel.name}\n**Кто:** {interaction.user.mention}\n**Кому:** {chosen_role.mention}", discord.Color.purple())
 
 class CustomRoleSelectView(discord.ui.View):
     def __init__(self, guild: discord.Guild, ticket_type: str, creator_id: int):
@@ -114,23 +97,16 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="📥 Взять на рассмотрение", style=discord.ButtonStyle.primary, custom_id="take_ticket_btn")
     async def take_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_mod_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав проверяющего!", ephemeral=True)
-            return
-        c_mention = f"<@{self.creator_id}>" if self.creator_id != 0 else "Автор заявки"
-        top_role = next((role.name for role in interaction.user.roles if role.hoist and role.name != "@everyone"), "Администрация")
-        
-        embed = discord.Embed(title="⏳ Статус: На рассмотрении", description=f"**Взято в работу!**\n\n👤 **Проверяющий:** {interaction.user.mention}\n💼 **Должность:** `{top_role}`", color=discord.Color.orange())
+        if not self.has_mod_permission(interaction.user): return
         button.disabled = True
         await interaction.response.edit_message(view=self)
-        await interaction.channel.send(embed=embed)
-        await send_audit_log(interaction.guild, "⏳ Тикет взят в работу", f"**Канал:** {interaction.channel.mention}\n**Кто:** {interaction.user.mention}", discord.Color.orange())
+        await interaction.channel.send(f"⏳ Тикет взят на рассмотрение сотрудником {interaction.user.mention}.")
 
     @discord.ui.button(label="🔀 Передать", style=discord.ButtonStyle.secondary, custom_id="forward_ticket_btn")
     async def forward_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
         view = CustomRoleSelectView(interaction.guild, self.ticket_type, self.creator_id)
-        await interaction.response.send_message("👇 Выберите роль из списка ниже для передачи дела:", view=view, ephemeral=True)
+        await interaction.response.send_message("👇 Выберите роль для передачи:", view=view, ephemeral=True)
 
     @discord.ui.button(label="🟢 Одобрить", style=discord.ButtonStyle.success, custom_id="approve_ticket_btn")
     async def approve_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -140,17 +116,13 @@ class TicketControlView(discord.ui.View):
     @discord.ui.button(label="🔴 Отклонить", style=discord.ButtonStyle.secondary, custom_id="deny_ticket_btn")
     async def deny_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
-        c_mention = f"<@{self.creator_id}>" if self.creator_id != 0 else "Автор заявления"
         await interaction.response.send_message("❌ **Заявление ОТКЛОНЕНО. Канал удалится через 5 секунд...**")
-        await send_audit_log(interaction.guild, "❌ Отклонено", f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}", discord.Color.red())
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
     @discord.ui.button(label="🔒 Закрыть", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
-        c_mention = f"<@{self.creator_id}>" if self.creator_id != 0 else "Автор заявления"
         await interaction.response.send_message("🔒 **Тикет закрывается. Удаление через 5 секунд...**")
-        await send_audit_log(interaction.guild, "🔒 Тикет закрыт", f"**Канал:** #{interaction.channel.name}\n**Модератор:** {interaction.user.mention}", discord.Color.dark_gray())
         await asyncio.sleep(5)
         await interaction.channel.delete()
