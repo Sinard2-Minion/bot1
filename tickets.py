@@ -3,6 +3,7 @@ from database import get_user_data, update_balance, check_medical_status
 from ticket_config import CATEGORIES
 from ticket_views import TicketControlView, send_audit_log
 
+# --- КЛАСС ВСПЛЫВАЮЩЕГО ОКНА (МОДАЛКИ) ---
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, ticket_type: str, med_checked: bool = False):
         super().__init__(title=ticket_type[:45])
@@ -16,7 +17,6 @@ class ApplicationModal(discord.ui.Modal):
         cfg = CATEGORIES.get(ticket_type)
         if cfg and "fields" in cfg:
             for idx, f_cfg in enumerate(cfg["fields"]):
-                # Если это поле медосмотра и мы его уже проверили кодом, пропускаем создание этого поля ввода
                 if "медицинский осмотр" in f_cfg["label"].lower():
                     continue
                 style = discord.TextStyle.paragraph if f_cfg["style"] == "paragraph" else discord.TextStyle.short
@@ -25,6 +25,9 @@ class ApplicationModal(discord.ui.Modal):
                 self.add_item(input_item)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ИСПРАВЛЕНО: Говорим Дискорду подождать, пока бот создаёт каналы, чтобы не было ошибки таймаута в модалке
+        await interaction.response.defer(ephemeral=True)
+        
         guild = interaction.guild
         user = interaction.user
         cfg = CATEGORIES.get(self.ticket_type)
@@ -32,14 +35,12 @@ class ApplicationModal(discord.ui.Modal):
         if self.ticket_type == "Смена фамилии":
             u_data = get_user_data(user.id)
             if u_data["cash"] < 1000:
-                await interaction.response.send_message("❌ Недостаточно денег для пошлины ($1,000)!", ephemeral=True)
+                await interaction.followup.send("❌ Недостаточно денег для пошлины ($1,000)!", ephemeral=True)
                 return
             update_balance(user.id, -1000, "cash")
             pay_status = "✅ Гос. пошлина ($1,000) успешно списана!"
         else:
             pay_status = "🆓 Бесплатная подача заявления."
-
-        await interaction.response.send_message(f"⌛ Создаем ваше заявление в системе...", ephemeral=True)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -61,7 +62,6 @@ class ApplicationModal(discord.ui.Modal):
         for _, input_item in self.fields_inputs.items():
             embed.add_field(name=f"📝 {input_item.label}:", value=input_item.value or "*Не заполнено*", inline=False)
 
-        # Выводим автоматический статус верификации от врача
         if self.ticket_type == "Лицензия":
             med_status_text = "🟢 Пройден (Электронная справка заверена врачом в базе данных)" if self.med_checked else "⚠️ Проверен"
             embed.add_field(name="🩺 Медицинский осмотр:", value=med_status_text, inline=False)
@@ -71,17 +71,22 @@ class ApplicationModal(discord.ui.Modal):
         await ticket_channel.send(embed=embed, view=TicketControlView(self.ticket_type, user.id))
         if ping_role_id: await ticket_channel.send(f"<@&{ping_role_id}>, новое заявление!", delete_after=5)
         await send_audit_log(guild, "✉️ Открыт новый РП-тикет", f"**Пользователь:** {user.mention}\n**Категория:** {self.ticket_type}\n**Канал:** {ticket_channel.mention}", discord.Color.blue())
+        
+        # Отправляем подтверждение вместо interaction.response
+        await interaction.followup.send(f"✅ Ваше заявление успешно создано: {ticket_channel.mention}", ephemeral=True)
 
+
+# --- ВЫПАДАЮЩЕЕ МЕНЮ ВЫБОРА КАТЕГОРИИ ---
 class ApplicationDropdown(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=n, description=c["description"][:100], emoji=c["emoji"]) for n, c in CATEGORIES.items()]
         super().__init__(placeholder="Выберите необходимый тип заявления...", min_values=1, max_values=1, options=options, custom_id="app_dropdown")
 
     async def callback(self, interaction: discord.Interaction):
-        chosen = self.values
+        chosen = self.values[0] if isinstance(self.values, list) else self.values
         user = interaction.user
 
-        # Если игрок выбирает Лицензию — бот жестко сверяет справку с базой данных медиков
+        # Проверка медосмотра для лицензии
         if chosen == "Лицензия":
             has_med_pass = check_medical_status(user.id)
             if not has_med_pass:
@@ -91,12 +96,11 @@ class ApplicationDropdown(discord.ui.Select):
                     ephemeral=True
                 )
                 return
-            
-            # Если медосмотр пройден, открываем анкету, передав статус True
             modal = ApplicationModal(chosen, med_checked=True)
         else:
             modal = ApplicationModal(chosen, med_checked=False)
 
+        # Вызываем всплывающее окно
         await interaction.response.send_modal(modal)
 
 class DropdownView(discord.ui.View):
