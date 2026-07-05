@@ -5,10 +5,10 @@ import os
 import random
 import asyncio
 
-# Импортируем модули нашей системы
 from tickets import DropdownView
+from ticket_views import TicketControlView
 from economy import setup_economy_commands
-from database import get_user_data, update_balance
+from database import get_user_data, update_balance, update_rp_status
 from keep_alive import keep_alive
 
 class RPCorporateBot(commands.Bot):
@@ -16,287 +16,140 @@ class RPCorporateBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        # Регистрируем префикс "!" для текстовых команд
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Подключаем слэш-команды экономики
         setup_economy_commands(self.tree)
-        # Синхронизируем слэш-команды глобально
+        self.add_view(TicketControlView())
+        self.add_view(DropdownView())
         await self.tree.sync()
 
 bot = RPCorporateBot()
 
-# --- СИСТЕМНЫЕ СЛЭШ-КОМАНДЫ АДМИНИСТРАЦИИ ---
-@bot.tree.command(name="настройка_меню", description="Отправить главное меню подачи заявлений")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_menu_slash(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🏛️ ГОСУДАРСТВЕННЫЙ ЦЕНТР УСЛУГ 🏛️",
-        description="Приветствуем вас в едином центре обработки заявлений граждан!\n\n👇 **Выберите необходимый тип заявления в меню ниже:**",
-        color=discord.Color.gold()
-    )
-    await interaction.response.send_message("Menus создано!", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=DropdownView())
+# --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ КАРТОЧКИ ДОКУМЕНТА ---
+def build_doc_embed(target: discord.Member, u_data: dict, doc_type: str):
+    if doc_type == "паспорт" and u_data["passport_data"]:
+        d = u_data["passport_data"]
+        embed = discord.Embed(title=f"🪪 ГОСУДАРСТВЕННЫЙ ПАСПОРТ РФ", color=discord.Color.red())
+        embed.add_field(name="📋 Гражданин (ФИО, Возраст):", value=f"**{d['info']}**", inline=False)
+        embed.add_field(name="🏛️ Выдано отделом:", value=f"`{d['authority']}`", inline=False)
+        embed.add_field(name="📅 Дата выдачи:", value=f"`{d['date']}`", inline=True)
+        embed.add_field(name="🔢 Серия и Номер:", value=f"`{d['number']}`", inline=True)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        return embed
+    
+    elif doc_type == "лицензии" and u_data["license_data"]:
+        d = u_data["license_data"]
+        embed = discord.Embed(title=f"🚗 ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ", color=discord.Color.blue())
+        embed.add_field(name="👤 Водитель:", value=target.mention, inline=False)
+        embed.add_field(name="🪪 Категории / Разрешение:", value=f"**{d['info']}**", inline=False)
+        embed.add_field(name="🏢 Кем выдано:", value=f"`{d['authority']}`", inline=False)
+        embed.add_field(name="📅 Срок действия от:", value=f"`{d['date']}`", inline=True)
+        embed.add_field(name="🔢 Номер бланка:", value=f"`{d['number']}`", inline=True)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        return embed
 
-# --- ОБРАБОТКА ОШИБОК ДЛЯ СЛЭШ-КОМАНД (ИСПРАВЛЕНО) ---
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CommandOnCooldown):
-        minutes = int(error.retry_after // 60)
-        seconds = int(error.retry_after % 60)
-        time_left = f"{minutes}м {seconds}с" if minutes > 0 else f"{seconds}с"
-        await interaction.response.send_message(f"⏱️ Команда на перезарядке! Подождите еще **{time_left}**.", ephemeral=True)
-    else:
-        raise error
+    elif doc_type == "медкарта" and u_data["med_exam"]:
+        d = u_data["med_exam"]
+        embed = discord.Embed(title=f"🩺 МЕДИЦИНСКАЯ КАРТА ШТАТА", color=discord.Color.green())
+        embed.add_field(name="👤 Пациент:", value=target.mention, inline=False)
+        embed.add_field(name="📊 РП-Заключение врача:", value=f"**{d['info']}**", inline=False)
+        embed.add_field(name="🏥 Медицинское учреждение:", value=f"`{d['authority']}`", inline=False)
+        embed.add_field(name="📅 Осмотр от:", value=f"`{d['date']}`", inline=True)
+        embed.add_field(name="🔢 Номер медкарт:", value=f"`{d['number']}`", inline=True)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        return embed
+    return None
 
-# --- ОБРАБОТКА ОШИБОК ДЛЯ ТЕКСТОВЫХ КОМАНД (!) ---
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandOnCooldown):
-        minutes = int(error.retry_after // 60)
-        seconds = int(error.retry_after % 60)
-        time_left = f"{minutes}м {seconds}с" if minutes > 0 else f"{seconds}с"
-        await ctx.send(f"⏱️ Команда на перезарядке! Подождите еще **{time_left}**.")
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ У вас нет прав администратора для использования этой команды!")
-    else:
-        raise error
+# --- КОМАНДЫ РП ПРОФИЛЕЙ ---
 
-# ====================================================================
-#     ОФИЦИАЛЬНЫЙ СПИСОК ТЕКСТОВЫХ КОМАНД С ПРЕФИКСОМ "!"
-# ====================================================================
-
-# --- КОМАНДЫ ЭКОНОМИКИ И БАНКА ---
-
-@bot.command(name="баланс", aliases=["bal", "money"])
-async def txt_balance(ctx, member: discord.Member = None):
-    target = member or ctx.author
+@bot.tree.command(name="профиль", description="Посмотреть свою РП-карточку")
+async def profile_slash(interaction: discord.Interaction, пользователь: discord.Member = None):
+    target = пользователь or interaction.user
     u_data = get_user_data(target.id)
-    embed = discord.Embed(title=f"💰 Баланс {target.display_name}", color=discord.Color.green())
-    embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']}", inline=False)
-    embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']}", inline=False)
-    embed.add_field(name="💳 Всего:", value=f"${u_data['cash'] + u_data['bank']}", inline=False)
-    await ctx.send(embed=embed)
+    embed = discord.Embed(title=f"🪪 Личное дело: {target.display_name}", color=discord.Color.blue())
+    embed.set_thumbnail(url=target.display_avatar.url)
+    
+    pass_txt = f"🟩 Зарегистрирован" if u_data["passport_data"] else "🟥 Отсутствует"
+    med_txt = f"🟩 Есть справка" if u_data["med_exam"] else "🟥 Не пройден"
+    lic_txt = f"🟩 Активны" if u_data["license_data"] else "🟥 Нету"
+    m_txt = u_data["married_data"] if u_data["married_data"] else "Нет"
+    
+    embed.add_field(name="📜 Паспорт:", value=pass_txt, inline=True)
+    embed.add_field(name="🩺 Медкарта:", value=med_txt, inline=True)
+    embed.add_field(name="🚗 Права:", value=lic_txt, inline=True)
+    embed.add_field(name="💍 Брак:", value=f"`{m_txt}`", inline=False)
+    embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']:,}", inline=True)
+    embed.add_field(name="🏦 Банк:", value=f"${u_data['bank']:,}", inline=True)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name="депозит", aliases=["dep"])
-async def txt_deposit(ctx, amount: int):
-    u_data = get_user_data(ctx.author.id)
-    if amount <= 0:
-        await ctx.send("❌ Сумма должна быть больше нуля!")
-        return
-    if u_data["cash"] < amount:
-        await ctx.send("❌ У вас нет столько наличных денег!")
-        return
-    update_balance(ctx.author.id, -amount, "cash")
-    update_balance(ctx.author.id, amount, "bank")
-    await ctx.send(f"🏦 Вы успешно положили **${amount}** на банковский счет.")
-
-@bot.command(name="снять", aliases=["with"])
-async def txt_withdraw(ctx, amount: int):
-    u_data = get_user_data(ctx.author.id)
-    if amount <= 0:
-        await ctx.send("❌ Сумма должна быть больше нуля!")
-        return
-    if u_data["bank"] < amount:
-        await ctx.send("❌ На вашем банковском счете нет столько денег!")
-        return
-    update_balance(ctx.author.id, amount, "cash")
-    update_balance(ctx.author.id, -amount, "bank")
-    await ctx.send(f"💵 Вы успешно сняли **${amount}** наличными.")
-
-# --- КОМАНДЫ ЗАРАБОТКА И КРИМИНАЛА ---
-
-@bot.command(name="работа", aliases=["work"])
-@commands.cooldown(1, 1800, commands.BucketType.user)  # Кулдаун 30 минут
-async def txt_work(ctx):
-    reward = random.randint(150, 400)
-    jobs = ["курьером", "офисным клерком", "водителем автобуса", "программистом", "автомехаником", "поваром"]
-    update_balance(ctx.author.id, reward, "cash")
-    await ctx.send(f"👔 Вы отработали смену **{random.choice(jobs)}** и заработали **${reward}**.")
-
-@bot.command(name="криминал", aliases=["crime"])
-@commands.cooldown(1, 10800, commands.BucketType.user)  # Кулдаун 3 часа
-async def txt_crime(ctx):
-    if random.randint(1, 100) <= 55:
-        fine = random.randint(500, 1000)
-        update_balance(ctx.author.id, -fine, "cash")
-        await ctx.send(f"🚨 Ограбление пошло не по плану! Спецназ зажал вас в углу. Суд выписал штраф **${fine}**.")
-    else:
-        reward = random.randint(800, 2000)
-        update_balance(ctx.author.id, reward, "cash")
-        await ctx.send(f"💰 Вы успешно взломали банкомат на окраине города и унесли куш в размере **${reward}**!")
-
-@bot.command(name="ограбить", aliases=["rob"])
-@commands.cooldown(1, 21600, commands.BucketType.user)  # Кулдаун 6 часов
-async def txt_rob(ctx, member: discord.Member):
-    if member.id == ctx.author.id:
-        await ctx.send("❌ Вы не можете ограбить самого себя!")
+@bot.tree.command(name="показать", description="Показать свой документ другому игроку")
+async def show_doc_slash(interaction: discord.Interaction, документ: str, кому: discord.Member):
+    dtype = документ.lower()
+    if dtype not in ["паспорт", "лицензии", "медкарта"]:
+        await interaction.response.send_message("❌ Выберите тип: `паспорт`, `лицензии` или `медкарта`", ephemeral=True)
         return
         
-    victim_data = get_user_data(member.id)
-    if victim_data["cash"] < 200:
-        await ctx.send(f"❌ У {member.display_name} слишком мало наличных денег в кармане. Грабить нечего!")
+    u_data = get_user_data(interaction.user.id)
+    embed = build_doc_embed(interaction.user, u_data, dtype)
+    
+    if embed is None:
+        await interaction.response.send_message(f"❌ Ошибка! У вас ещё не оформлен этот документ (`{dtype}`). Зайдите в Центр Услуг.", ephemeral=True)
         return
-
-    if random.randint(1, 100) <= 50:
-        fine = 500
-        update_balance(ctx.author.id, -fine, "cash")
-        update_balance(member.id, fine, "cash")
-        await ctx.send(f"👮‍♂️ {member.mention} поймал вас за руку во время кражи! Вы выплатили ему компенсацию **$500**.")
-    else:
-        percent = random.randint(20, 50)
-        stolen_amount = int(victim_data["cash"] * (percent / 100))
         
-        update_balance(member.id, -stolen_amount, "cash")
-        update_balance(ctx.author.id, stolen_amount, "cash")
-        await ctx.send(f"🥷 Вы незаметно вытащили кошелек у {member.mention} и украли **${stolen_amount}** ({percent}% от его наличных)!")
+    await interaction.response.send_message(f"✅ Вы показали документ игроку {кому.mention}", ephemeral=True)
+    await interaction.channel.send(f"👤 {interaction.user.mention} протянул документ {кому.mention}:", embed=embed)
 
-# --- КОМАНДЫ АДМИНИСТРАЦИИ И ТИКЕТОВ ---
+# --- ОБЫЧНЫЕ ТЕКСТОВЫЕ КОМАНДЫ ПРЕФИКСА (!) ---
 
-@bot.command(name="выдать")
-@commands.has_permissions(administrator=True)
-async def txt_give(ctx, member: discord.Member, amount: int):
-    if amount <= 0:
-        await ctx.send("❌ Сумма должна быть больше нуля!")
+@bot.command(name="профиль", aliases=["p"])
+async def txt_profile(ctx, member: discord.Member = None):
+    t = member or ctx.author
+    u = get_user_data(t.id)
+    emb = discord.Embed(title=f"🪪 Личное дело: {t.display_name}", color=discord.Color.blue())
+    emb.add_field(name="📜 Паспорт:", value="🟩 Есть" if u["passport_data"] else "🟥 Нет", inline=True)
+    emb.add_field(name="🩺 Медкарта:", value="🟩 Есть" if u["med_exam"] else "🟥 Нет", inline=True)
+    emb.add_field(name="🚗 Права:", value="🟩 Есть" if u["license_data"] else "🟥 Нет", inline=True)
+    await ctx.send(embed=emb)
+
+@bot.command(name="показать")
+async def txt_show(ctx, тип: str, member: discord.Member):
+    u = get_user_data(ctx.author.id)
+    emb = build_doc_embed(ctx.author, u, тип.lower())
+    if not emb:
+        await ctx.send("❌ Документ отсутствует или указан неверно (`паспорт`/`лицензии`/`медкарта`)!")
         return
-    update_balance(member.id, amount, "cash")
-    await ctx.send(f"✅ Администратор выдал **${amount}** игроку {member.mention}.")
+    await ctx.send(f"👤 {ctx.author.mention} показал документ {member.mention}:", embed=emb)
 
-@bot.command(name="меню", aliases=["тикет", "панель"])
+@bot.command(name="настройка_меню")
 @commands.has_permissions(administrator=True)
-async def txt_setup_menu(ctx):
-    embed = discord.Embed(
-        title="🏛️ ГОСУДАРСТВЕННЫЙ ЦЕНТР УСЛУГ 🏛️",
-        description="Приветствуем вас в едином центре обработки заявлений граждан!\n\n👇 **Выберите необходимый тип заявления в меню ниже:**",
-        color=discord.Color.gold()
-    )
+async def setup_menu_txt(ctx):
+    embed = discord.Embed(title="🏛️ ГОСУДАРСТВЕННЫЙ ЦЕНТР УСЛУГ 🏛️", description="Выберите необходимый тип заявления в меню ниже:", color=discord.Color.gold())
     await ctx.message.delete()
     await ctx.send(embed=embed, view=DropdownView())
 
 @bot.command(name="закрыть", aliases=["close"])
 async def txt_close_ticket(ctx):
     if "заявление-" in ctx.channel.name:
-        await ctx.send("Тикет будет удален через 5 секунд...", delete_after=5)
+        await ctx.send("Тикет будет удален через 5 секунд...")
         await asyncio.sleep(5)
         await ctx.channel.delete()
-    else:
-        await ctx.send("❌ Эту команду можно использовать только внутри каналов-заявлений!", delete_after=5)
 
-# --- КОМАНДА ДЛЯ МЕДИЦИНСКОЙ СЛУЖБЫ (ВСТАВЛЯТЬ В КОНЕЦ MAIN.PY) ---
-
-from database import update_medical_status
-
-ROLE_MEDIC_ID = 1523265245030649866  # ВСТАВЬТЕ СЮДА ID РОЛИ ВАШИХ ВРАЧЕЙ / МЕДИКОВ
-
-@bot.command(name="медосмотр", aliases=["med", "справка"])
+# --- КОМАНДА МЕДИКОВ ---
+ROLE_MEDIC_ID = 555666777888
+@bot.command(name="медосмотр", aliases=["med"])
 async def txt_med_exam(ctx, member: discord.Member, статус: str = "одобрить"):
-    # Проверяем, является ли автор сообщения врачом (роль медика) или админом
-    is_medic = ctx.author.get_role(ROLE_MEDIC_ID) is not None
-    is_admin = ctx.author.guild_permissions.administrator
-
-    if not (is_medic or is_admin):
-        await ctx.send("❌ Эту команду могут использовать только квалифицированные сотрудники Медицинской Службы!")
-        return
-
-    if статус.lower() in ["одобрить", "+", "yes", "пройден"]:
+    if not (ctx.author.get_role(ROLE_MEDIC_ID) or ctx.author.guild_permissions.administrator): return
+    if статус.lower() in ["одобрить", "+", "пройден"]:
         update_medical_status(member.id, True)
-        
-        embed = discord.Embed(
-            title="🩺 Электронная медицинская карта обновлена",
-            description=f"👤 **Гражданин:** {member.mention}\n🚑 **Врач:** {ctx.author.mention}\n📊 **Статус медосмотра:** `ПРОЙДЕН (Годен к получению лицензий)`",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
+        await ctx.send(f"✅ Врач {ctx.author.mention} зафиксировал прохождение медосмотра для {member.mention}.")
     else:
-        # Позволяет врачам аннулировать справку (например, если она просрочена)
         update_medical_status(member.id, False)
-        await ctx.send(f"⚠️ Медицинский осмотр для игрока {member.mention} был аннулирован сотрудником {ctx.author.mention}.")
-
-# --- СИСТЕМА РП ПРОФИЛЕЙ И ПАСПОРТОВ ---
-
-from database import update_rp_status
-
-@bot.tree.command(name="профиль", description="Посмотреть свой паспорт и РП-карточку")
-async def profile_slash(interaction: discord.Interaction, пользователь: discord.Member = None):
-    target = пользователь or interaction.user
-    u_data = get_user_data(target.id)
-    
-    embed = discord.Embed(title=f"🪪 РП Паспорт гражданина: {target.display_name}", color=discord.Color.blue())
-    embed.set_thumbnail(url=target.display_avatar.url)
-    
-    # Превращаем True/False в красивые маркеры для игроков
-    passport_status = "🟩 Оформлен" if u_data["has_passport"] else "🟥 Отсутствует"
-    med_status = "🟩 Действительна (Годен)" if u_data["med_exam"] else "🟥 Не пройдена"
-    license_status = "🟩 Есть" if u_data["drive_license"] else "🟥 Нету"
-    
-    embed.add_field(name="📜 Паспортный статус:", value=passport_status, inline=True)
-    embed.add_field(name="🩺 Медицинская карта:", value=med_status, inline=True)
-    embed.add_field(name="🚗 Водительские права:", value=license_status, inline=True)
-    embed.add_field(name="💍 Семейное положение:", value=f"👥 `{u_data['married_to']}`", inline=False)
-    
-    embed.add_field(name="💵 Наличные деньги:", value=f"${u_data['cash']:,}", inline=True)
-    embed.add_field(name="🏦 Сбережения в банке:", value=f"${u_data['bank']:,}", inline=True)
-    
-    embed.set_footer(text="Подать заявления на получение документов можно в Центре Услуг.")
-    await interaction.response.send_message(embed=embed)
-
-@bot.command(name="профиль", aliases=["паспорт", "p", "profile"])
-async def profile_txt(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    u_data = get_user_data(target.id)
-    
-    embed = discord.Embed(title=f"🪪 РП Паспорт гражданина: {target.display_name}", color=discord.Color.blue())
-    embed.set_thumbnail(url=target.display_avatar.url)
-    
-    passport_status = "🟩 Оформлен" if u_data["has_passport"] else "🟥 Отсутствует"
-    med_status = "🟩 Действительна (Годен)" if u_data["med_exam"] else "🟥 Не пройдена"
-    license_status = "🟩 Есть" if u_data["drive_license"] else "🟥 Нету"
-    
-    embed.add_field(name="📜 Паспортный статус:", value=passport_status, inline=True)
-    embed.add_field(name="🩺 Медицинская карта:", value=med_status, inline=True)
-    embed.add_field(name="🚗 Водительские права:", value=license_status, inline=True)
-    embed.add_field(name="💍 Семейное положение:", value=f"👥 `{u_data['married_to']}`", inline=False)
-    
-    embed.add_field(name="💵 Наличные деньги:", value=f"${u_data['cash']}", inline=True)
-    embed.add_field(name="🏦 Сбережения в банке:", value=f"${u_data['bank']}", inline=True)
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name="выдать_документ", aliases=["документ", "setrp"])
-@commands.has_permissions(administrator=True)
-async def txt_set_rp_status(ctx, member: discord.Member, тип: str, значение: str):
-    # Команда для админов, чтобы быстро выдавать статусы в чате
-    # Пример: !документ @Мика права да | !документ @Мика брак @НикПартнера
-    t = тип.lower()
-    v = значение.lower()
-    
-    if t in ["паспорт", "passport"]:
-        status = True if v in ["да", "yes", "+", "выдать"] else False
-        update_rp_status(member.id, "has_passport", status)
-        await ctx.send(f"✅ Паспортный статус для {member.mention} изменен.")
-        
-    elif t in ["права", "license"]:
-        status = True if v in ["да", "yes", "+", "выдать"] else False
-        update_rp_status(member.id, "drive_license", status)
-        await ctx.send(f"✅ Водительские права для {member.mention} изменены.")
-        
-    elif t in ["брак", "married"]:
-        update_rp_status(member.id, "married_to", значение)
-        await ctx.send(f"✅ Семейное положение {member.mention} обновлено: в браке с `{значение}`.")
-
+        await ctx.send(f"⚠️ Медосмотр для {member.mention} аннулирован.")
 
 @bot.event
-async def on_ready():
-    print(f"🤖 Бот {bot.user.name} успешно запущен. Все префиксы и слэш-команды активны!")
+async def on_ready(): print(f"🤖 Система РП-паспортов с фото, авто-датами и ведомствами УМВД/ГАИ запущена!")
 
-# Запускаем веб-сервер Flask для Render
 keep_alive()
-
-# Загружаем скрытый токен из переменных окружения
 TOKEN = os.environ.get("BOT_TOKEN")
-
-if TOKEN is None:
-    print("❌ ОШИБКА: Секретный ключ 'BOT_TOKEN' не найден в переменных окружения!")
-else:
-    bot.run(TOKEN)
+if TOKEN: bot.run(TOKEN)
