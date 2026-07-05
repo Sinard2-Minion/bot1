@@ -187,7 +187,7 @@ async def txt_close_ticket(ctx):
 
 from database import update_medical_status
 
-ROLE_MEDIC_ID = 555666777888  # ВСТАВЬТЕ СЮДА ID РОЛИ ВАШИХ ВРАЧЕЙ / МЕДИКОВ
+ROLE_MEDIC_ID = 1523265245030649866  # ВСТАВЬТЕ СЮДА ID РОЛИ ВАШИХ ВРАЧЕЙ / МЕДИКОВ
 
 @bot.command(name="медосмотр", aliases=["med", "справка"])
 async def txt_med_exam(ctx, member: discord.Member, статус: str = "одобрить"):
