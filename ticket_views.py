@@ -2,16 +2,22 @@ import discord
 import asyncio
 from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES
 
+# --- ФУНКЦИЯ ДЛЯ ОТПРАВКИ ЛОГОВ АУДИТА (ИСПРАВЛЕНА) ---
 async def send_audit_log(guild, title, description, color):
-    channel = guild.get_channel(AUDIT_LOG_CHANNEL_ID)
-    if channel:
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_timestamp()
-        await channel.send(embed=embed)
+    try:
+        channel = guild.get_channel(int(AUDIT_LOG_CHANNEL_ID))
+        if channel:
+            embed = discord.Embed(title=title, description=description, color=color)
+            embed.set_timestamp()
+            await channel.send(embed=embed)
+        else:
+            print(f"⚠️ ПРЕДУПРЕЖДЕНИЕ: Канал аудита с ID {AUDIT_LOG_CHANNEL_ID} не найден на сервере!")
+    except Exception as e:
+        print(f"❌ Ошибка при отправке логов аудита: {e}")
 
 class CustomRoleDropdown(discord.ui.Select):
     def __init__(self, guild: discord.Guild, ticket_type: str, creator: discord.Member):
-        max_role = guild.get_role(MAX_ALLOWED_ROLE_ID)
+        max_role = guild.get_role(int(MAX_ALLOWED_ROLE_ID))
         options = []
         sorted_roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
 
@@ -42,7 +48,7 @@ class CustomRoleDropdown(discord.ui.Select):
         
         await interaction.message.delete()
         await interaction.channel.send(f"{chosen_role.mention}, требуется ваша проверка!", embed=embed)
-        await send_audit_log(guild, "🔀 Тикет перенаправлен", f"**Канал:** {interaction.channel.mention}\n**Кто:** {interaction.user.mention}\n**Кому:** {chosen_role.mention}", discord.Color.purple())
+        await send_audit_log(guild, "🔀 Тикет перенаправлен", f"**Канал:** #{interaction.channel.name}\n**Кто:** {interaction.user.mention}\n**Кому:** {chosen_role.mention}", discord.Color.purple())
 
 class CustomRoleSelectView(discord.ui.View):
     def __init__(self, guild: discord.Guild, ticket_type: str, creator: discord.Member):
@@ -58,12 +64,12 @@ class TicketControlView(discord.ui.View):
     def has_mod_permission(self, member: discord.Member) -> bool:
         if member.guild_permissions.administrator: return True
         cfg = CATEGORIES.get(self.ticket_type)
-        return bool(cfg and member.get_role(cfg["role_id"]))
+        return bool(cfg and member.get_role(int(cfg["role_id"])))
 
     @discord.ui.button(label="📥 Взять на рассмотрение", style=discord.ButtonStyle.primary, custom_id="take_ticket")
     async def take_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user):
-            await interaction.response.send_message("❌ Вы не проверяющий!", ephemeral=True)
+            await interaction.response.send_message("❌ Вы не являетесь уполномоченным проверяющим!", ephemeral=True)
             return
 
         top_role = "Администрация"
@@ -80,22 +86,39 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="🔀 Передать", style=discord.ButtonStyle.secondary, custom_id="forward_ticket")
     async def forward_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_mod_permission(interaction.user): return
+        if not self.has_mod_permission(interaction.user): 
+            await interaction.response.send_message("❌ У вас нет прав для управления этим заявлением!", ephemeral=True)
+            return
         view = CustomRoleSelectView(interaction.guild, self.ticket_type, self.creator)
         await interaction.response.send_message("👇 Выберите роль из списка ниже для передачи дела:", view=view, ephemeral=True)
 
     @discord.ui.button(label="🟢 Одобрить", style=discord.ButtonStyle.success, custom_id="approve_ticket")
     async def approve_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
-        await interaction.response.send_message("✅ **Заявление ОДОБРЕНО. Очистка через 5 сек...**")
+        
+        # Защита от таймаута Дискорда
+        await interaction.response.send_message("✅ **Заявление официально ОДОБРЕНО. Канал удалится через 5 секунд...**")
         await send_audit_log(interaction.guild, "✅ Одобрено", f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}", discord.Color.green())
+        
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
     @discord.ui.button(label="🔴 Отклонить", style=discord.ButtonStyle.secondary, custom_id="deny_ticket")
     async def deny_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
-        await interaction.response.send_message("❌ **Заявление ОТКЛОНЕНО. Очистка через 5 сек...**")
+        
+        await interaction.response.send_message("❌ **Заявление ОТКЛОНЕНО. Канал удалится через 5 секунд...**")
         await send_audit_log(interaction.guild, "❌ Отклонено", f"**Канал:** #{interaction.channel.name}\n**Проверяющий:** {interaction.user.mention}", discord.Color.red())
+        
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+    @discord.ui.button(label="🔒 Закрыть", style=discord.ButtonStyle.danger, custom_id="close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user): return
+        
+        await interaction.response.send_message("🔒 **Тикет закрывается. Удаление через 5 секунд...**")
+        await send_audit_log(interaction.guild, "🔒 Тикет закрыт", f"**Канал:** #{interaction.channel.name}\n**Модератор:** {interaction.user.mention}", discord.Color.dark_gray())
+        
         await asyncio.sleep(5)
         await interaction.channel.delete()
