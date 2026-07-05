@@ -183,7 +183,36 @@ async def txt_close_ticket(ctx):
     else:
         await ctx.send("❌ Эту команду можно использовать только внутри каналов-заявлений!", delete_after=5)
 
-# ====================================================================
+# --- КОМАНДА ДЛЯ МЕДИЦИНСКОЙ СЛУЖБЫ (ВСТАВЛЯТЬ В КОНЕЦ MAIN.PY) ---
+
+from database import update_medical_status
+
+ROLE_MEDIC_ID = 555666777888  # ВСТАВЬТЕ СЮДА ID РОЛИ ВАШИХ ВРАЧЕЙ / МЕДИКОВ
+
+@bot.command(name="медосмотр", aliases=["med", "справка"])
+async def txt_med_exam(ctx, member: discord.Member, статус: str = "одобрить"):
+    # Проверяем, является ли автор сообщения врачом (роль медика) или админом
+    is_medic = ctx.author.get_role(ROLE_MEDIC_ID) is not None
+    is_admin = ctx.author.guild_permissions.administrator
+
+    if not (is_medic or is_admin):
+        await ctx.send("❌ Эту команду могут использовать только квалифицированные сотрудники Медицинской Службы!")
+        return
+
+    if статус.lower() in ["одобрить", "+", "yes", "пройден"]:
+        update_medical_status(member.id, True)
+        
+        embed = discord.Embed(
+            title="🩺 Электронная медицинская карта обновлена",
+            description=f"👤 **Гражданин:** {member.mention}\n🚑 **Врач:** {ctx.author.mention}\n📊 **Статус медосмотра:** `ПРОЙДЕН (Годен к получению лицензий)`",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+    else:
+        # Позволяет врачам аннулировать справку (например, если она просрочена)
+        update_medical_status(member.id, False)
+        await ctx.send(f"⚠️ Медицинский осмотр для игрока {member.mention} был аннулирован сотрудником {ctx.author.mention}.")
+
 
 @bot.event
 async def on_ready():
