@@ -28,3 +28,18 @@ def update_balance(user_id, amount, mode="cash"):
         data[uid] = {"cash": 500, "bank": 0}
     data[uid][mode] += amount
     save_eco(data)
+# --- БАЗА ДАННЫХ МЕДИЦИНСКИХ ОСМОТРОВ ---
+def update_medical_status(user_id, status: bool):
+    data = load_eco()
+    uid = str(user_id)
+    if uid not in data:
+        data[uid] = {"cash": 500, "bank": 0}
+    data[uid]["med_exam"] = status
+    save_eco(data)
+
+def check_medical_status(user_id) -> bool:
+    data = load_eco()
+    uid = str(user_id)
+    if uid not in data:
+        return False
+    return data[uid].get("med_exam", False)  # По умолчанию False (не пройден)
