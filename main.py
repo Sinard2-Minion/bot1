@@ -11,7 +11,14 @@ from ticket_views import TicketControlView
 from economy import setup_economy_commands
 from database import get_user_data, update_balance, update_medical_status, update_rp_status
 from doc_renderer import build_doc_embed
-from ticket_config import HOUSES_BASE
+# Найдите вверху main.py эту строку:
+# from ticket_config import HOUSES_BASE
+# И ЗАМЕНИТЕ ЕЁ НА ЭТИ СТРОКИ:
+
+from ticket_config import HOUSES_PART1
+from ticket_config_part2 import HOUSES_PART2
+HOUSES_BASE = HOUSES_PART1 + HOUSES_PART2
+
 from keep_alive import keep_alive
 
 class RPCorporateBot(commands.Bot):
