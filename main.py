@@ -108,10 +108,12 @@ async def txt_setup_houses_final(ctx):
     status_msg = await ctx.send("⌛ **Запускаю генерацию РП-форума недвижимости г. Адреналин, пожалуйста подождите...**")
 
     try:
-        # Создаем канал-форум напрямую через контекст текстовой команды без багов
-        forum_channel = await guild.create_forum_channel(
+          try:
+        # ИСПРАВЛЕНО: Создаем форум через правильный тип канала discord.ChannelType.forum
+        forum_channel = await guild.create_text_channel(
             name="🏡｜база-домов",
             category=category,
+            type=discord.ChannelType.forum,
             topic="Официальный каталог жилой недвижимости г. Адреналин (Emergency Hamburg Roblox)."
         )
         
@@ -119,10 +121,21 @@ async def txt_setup_houses_final(ctx):
 
         for house in HOUSES_BASE:
             embed = discord.Embed(
-                title=f"🏡 КАТАЛОГ ЖИЛЬЯ: {house['name'].upper()}",
+                title=f"🏡 К КАТАЛОГ ЖИЛЬЯ: {house['name'].upper()}",
                 description=f"**Официальная карточка жилого объекта недвижимости.**\n\n💰 **Рыночная стоимость в игре:** `{house['price']}`\n🏷️ **Класс недвижимости:** `{house['tags']}`\n\n📝 **Описание объекта:**\n> *{house['desc']}*\n\n==================================================\n⚠️ Чтобы зарегистрировать этот дом на себя, подайте заявление в разделе `Реестр имущества` центра госуслуг!",
                 color=discord.Color.gold()
             )
+
+            # Публикуем вкладки-треды в созданном форуме
+            await forum_channel.create_thread(
+                name=f"{house['name']} | {house['price']}",
+                content=f"📈 Спецификация недвижимости для объекта: **{house['name']}**",
+                embed=embed
+            )
+            # Стабильный интервал, чтобы Discord не выдал ошибку Rate Limit
+            await asyncio.sleep(1.5)
+
+        await ctx.send(f"✅ **Все дома из Emergency Hamburg успешно загружены в новый форум недвижимости {forum_channel.mention}!**")
 
             # Публикуем вкладки-треды в форуме, добавляя текстовое наполнение
             await forum_channel.create_thread(
