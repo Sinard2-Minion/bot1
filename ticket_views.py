@@ -2,7 +2,10 @@ import discord
 import asyncio
 import random
 from datetime import datetime
-from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES, VERDICTS
+from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES, VERDICTS, HOUSES_PART1
+from ticket_config_part2 import HOUSES_PART2, BUSINESSES_BASE
+
+ALL_HOUSES = HOUSES_PART1 + HOUSES_PART2
 
 async def send_audit_log(guild, title, description, color):
     try:
@@ -13,59 +16,110 @@ async def send_audit_log(guild, title, description, color):
             await channel.send(embed=embed)
     except Exception as e: print(f"❌ Ошибка логов: {e}")
 
-# --- КНОПКА КУПИТЬ ПОД КАЖДЫМ ДОМОМ ---
-class BuyHouseButton(discord.ui.Button):
-    def __init__(self, house_id: str, house_name: str, house_price: str):
-        super().__init__(label="🛒 Купить дом", style=discord.ButtonStyle.success, custom_id=f"buy_house_{house_id}")
-        self.house_id = house_id
-        self.house_name = house_name
-        self.house_price = house_price
+class TargetBuyButton(discord.ui.Button):
+    def __init__(self, obj_id: str, obj_name: str, obj_price: str, is_business: bool = False):
+        super().__init__(label="🛒 Подать заявку на покупку", style=discord.ButtonStyle.success, custom_id=f"buy_obj_{obj_id}")
+        self.obj_id, self.obj_name, self.obj_price, self.is_business = obj_id, obj_name, obj_price, is_business
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild, user = interaction.guild, interaction.user
         
-        # Настройка приватного тикета для покупки
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
-        cfg = CATEGORIES.get("Покупка недвижимости")
-        if cfg and cfg.get("role_id"):
-            role_obj = guild.get_role(int(cfg["role_id"]))
-            if role_obj: overwrites[role_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        cfg_name = "Регистрация бизнеса" if self.is_business else "Покупка недвижимости"
+        cfg = CATEGORIES.get(cfg_name, {"role_id": 1523079704007934123})
+        role_obj = guild.get_role(int(cfg["role_id"]))
+        if role_obj: overwrites[role_obj] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-        # Создаем канал сделки
-        ch_name = f"дом-{self.house_id}-{user.name}"
+        prefix = "бизнес" if self.is_business else "дом"
+        ch_name = f"{prefix}-{self.obj_id}-{user.name}"
         ticket_channel = await guild.create_text_channel(name=ch_name, overwrites=overwrites)
 
-        embed_deal = discord.Embed(title="🤝 ОФОРМЛЕНИЕ СДЕЛКИ КУПЛИ-ПРОДАЖИ", color=discord.Color.gold())
-        embed_deal.add_field(name="🏡 Выбранный объект:", value=f"**{self.house_name}**", inline=False)
-        embed_deal.add_field(name="💰 Игровая стоимость:", value=f"`${int(self.house_price):,}`", inline=True)
-        embed_deal.add_field(name="👤 Покупатель:", value=user.mention, inline=True)
-        embed_deal.set_footer(text="Ожидайте проверяющее руководство Департамента Имущества.")
-        embed_deal.set_thumbnail(url=user.display_avatar.url)
+        embed = discord.Embed(title="🤝 ОФОРМЛЕНИЕ СДЕЛКИ С ГОСУДАРСТВОМ", color=discord.Color.gold())
+        embed.add_field(name="🏛️ Объект имущества:", value=f"**{self.obj_name}**", inline=False)
+        embed.add_field(name="💰 Гос. стоимость:", value=f"`${int(self.obj_price.replace('$', '').replace(',', '')):,}`", inline=True)
+        embed.add_field(name="👤 Покупатель:", value=user.mention, inline=True)
+        embed.set_thumbnail(url=user.display_avatar.url)
 
-        # Подключаем пульт кнопок (Взять, Одобрить, Отклонить) к тикету дома
-        await ticket_channel.send(embed=embed_deal, view=TicketControlView("Покупка недвижимости", user.id))
-        await interaction.followup.send(f"✅ Тикет на покупку дома успешно открыт: {ticket_channel.mention}", ephemeral=True)
+        await ticket_channel.send(embed=embed, view=TicketControlView(cfg_name, user.id))
+        await interaction.followup.send(f"✅ Создан приватный тикет для оформления сделки: {ticket_channel.mention}", ephemeral=True)
 
-class HouseButtonView(discord.ui.View):
-    def __init__(self, house_id: str, house_name: str, house_price: str):
+class SpecificObjectSelect(discord.ui.Select):
+    def __init__(self, mode: str):
+        options = []
+        self.mode = mode
+        
+        if mode == "houses":
+            for h in ALL_HOUSES:
+                options.append(discord.SelectOption(label=h["name"], value=h["id"], description=f"Цена: {h['price']}", emoji="🏡"))
+            placeholder_text = "Выберите номер дома для осмотра..."
+        else:
+            for b in BUSINESSES_BASE:
+                options.append(discord.SelectOption(label=b["name"], value=b["id"], description=f"Цена: ${int(b['price']):,}", emoji="💼"))
+            placeholder_text = "Выберите предприятие для осмотра..."
+
+        super().__init__(placeholder=placeholder_text, min_values=1, max_values=1, options=options, custom_id="specific_obj_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        chosen_id = self.values
+        
+        if self.mode == "houses":
+            item = next((h for h in ALL_HOUSES if h["id"] == chosen_id), None)
+            is_biz = False
+        else:
+            item = next((b for b in BUSINESSES_BASE if b["id"] == chosen_id), None)
+            is_biz = True
+
+        if not item: return
+
+        embed_info = discord.Embed(title=f"📋 ИНФОРМАЦИОННАЯ КАРТОЧКА ОБЪЕКТА", color=discord.Color.blue())
+        price_val = item["price"] if "$" in item["price"] else f"${int(item['price']):,}"
+        embed_info.add_field(name="🏷️ Название:", value=f"**{item['name']}**", inline=False)
+        embed_info.add_field(name="💰 Фиксированная цена:", value=f"`{price_val}`", inline=True)
+        embed_info.add_field(name="📊 Класс:", value=f"`{item['tags']}`", inline=True)
+        embed_info.add_field(name="📝 РП-Описание и Спецификация:", value=f"> *{item['desc']}*", inline=False)
+        embed_info.set_footer(text="Вы можете нажать кнопку ниже, чтобы открыть тикет покупки.")
+
+        view = discord.ui.View(timeout=120)
+        view.add_item(TargetBuyButton(item["id"], item["name"], item["price"], is_biz))
+        await interaction.followup.send(embed=embed_info, view=view, ephemeral=True)
+class PropertyCategorySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Жилая недвижимость (Дома)", value="cat_houses", description="Каталог из 21 дома в г. Адреналин", emoji="🏡"),
+            discord.SelectOption(label="Коммерческие предприятия (Бизнесы)", value="cat_biz", description="Покупка заправок, автосалонов, магазинов", emoji="💼")
+        ]
+        super().__init__(placeholder="Выберите тип интересующего имущества...", min_values=1, max_values=1, options=options, custom_id="prop_cat_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen_cat = self.values
+        view = discord.ui.View(timeout=None)
+        if chosen_cat == "cat_houses":
+            view.add_item(SpecificObjectSelect("houses"))
+            msg = "⬇️ **Реестр жилого фонда обновлен. Выберите необходимый ДОМ в меню ниже:**"
+        else:
+            view.add_item(SpecificObjectSelect("businesses"))
+            msg = "⬇️ **Реестр коммерции обновлен. Выберите необходимый БИЗНЕС в меню ниже:**"
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
+
+class MainPropertyView(discord.ui.View):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(BuyHouseButton(house_id, house_name, house_price))
+        self.add_item(PropertyCategorySelect())
 
-# --- ОКНО ВЕРДИКТА ЛИДЕРА ---
 class VerdictModal(discord.ui.Modal):
     def __init__(self, ticket_type: str, creator_id: int):
         super().__init__(title="Заполнение реестра")
         self.ticket_type, self.creator_id = ticket_type, creator_id
-        v_cfg = VERDICTS.get(ticket_type, {"fields": [{"label": "РП-Примечание", "placeholder": "Введите текст..."}], "db_field": None, "authority": "Гос. Органы"})
+        v_cfg = VERDICTS.get(ticket_type, {"fields": [{"label": "РП-Примечание", "placeholder": "Текст..."}], "db_field": None})
         self.db_field = v_cfg.get("db_field")
         self.inputs = []
-
         for idx, f_info in enumerate(v_cfg.get("fields", [])):
             txt_input = discord.ui.TextInput(label=f_info["label"][:45], placeholder=f_info["placeholder"][:100], required=True, max_length=100, custom_id=f"v_f_{idx}")
             self.inputs.append(txt_input)
@@ -78,24 +132,19 @@ class VerdictModal(discord.ui.Modal):
         current_date, doc_num = datetime.now().strftime("%d.%m.%Y"), f"{random.randint(10, 99)} {random.randint(1000, 9999)}"
         clean_name = user.display_name.replace(" ", "_")
         signature = f"{clean_name[:1].upper()}.{clean_name.split('_')[-1][:10] if '_' in clean_name else clean_name[:10]} ✍️"
-
         doc_data = {"date": current_date, "number": doc_num, "signature": signature}
-        embed = discord.Embed(title=f"📜 ОФИЦИАЛЬНЫЙ РЕЕСТР ВЕРДИКТОВ", color=discord.Color.green())
-        embed.add_field(name="📅 Дата утверждения:", value=f"`{current_date}`", inline=True)
+        embed = discord.Embed(title="📜 ОФИЦИАЛЬНЫЙ РЕЕСТР ВЕРДИКТОВ", color=discord.Color.green())
+        embed.add_field(name="📅 Дата выдачи:", value=f"`{current_date}`", inline=True)
         embed.add_field(name="🔢 Номер записи:", value=f"`№{doc_num}`", inline=True)
-
         for inp in self.inputs:
             doc_data[inp.label] = inp.value
             embed.add_field(name=f"📝 {inp.label}:", value=f"**{inp.value}**", inline=False)
-
-        embed.add_field(name="🖋️ Подпись лица:", value=f"`{signature}`", inline=False)
+        embed.add_field(name="🖋️ Подпись должностного лица:", value=f"`{signature}`", inline=False)
         if self.db_field and self.creator_id != 0: update_rp_status(self.creator_id, self.db_field, doc_data)
-
         await interaction.channel.send(embed=embed)
         await asyncio.sleep(10)
         await interaction.channel.delete()
 
-# --- КНОПКИ ВНУТРИ ТИКЕТОВ ---
 class TicketControlView(discord.ui.View):
     def __init__(self, ticket_type: str = "Неизвестно", creator_id: int = 0):
         super().__init__(timeout=None)
@@ -103,7 +152,7 @@ class TicketControlView(discord.ui.View):
 
     def has_mod_permission(self, member: discord.Member) -> bool:
         if member.guild_permissions.administrator: return True
-        cfg = CATEGORIES.get(self.ticket_type)
+        cfg = CATEGORIES.get(self.ticket_type, {"role_id": 1523079704007934123})
         return bool(cfg and member.get_role(int(cfg["role_id"])))
 
     @discord.ui.button(label="📥 Взять в работу", style=discord.ButtonStyle.primary, custom_id="take_ticket_btn")
@@ -121,7 +170,7 @@ class TicketControlView(discord.ui.View):
     @discord.ui.button(label="🔴 Отклонить", style=discord.ButtonStyle.secondary, custom_id="deny_ticket_btn")
     async def deny_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.has_mod_permission(interaction.user): return
-        await interaction.response.send_message("❌ **Сделка / Заявление ОТКЛОНЕНО. Канал удалится через 5 секунд...**")
+        await interaction.response.send_message("❌ **Заявление / Имущественная сделка ОТКЛОНЕНА. Канал удалится через 5 секунд...**")
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
