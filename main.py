@@ -4,16 +4,13 @@ from discord import app_commands
 import os
 import asyncio
 
+# Импортируем модули нашей системы
 from tickets import DropdownView
-from ticket_views import TicketControlView, HouseButtonView
+from ticket_views import TicketControlView, MainPropertyView
 from economy import setup_economy_commands
 from database import get_user_data, update_balance, update_medical_status
 from doc_renderer import build_doc_embed
-from ticket_config import HOUSES_PART1
-from ticket_config_part2 import HOUSES_PART2
 from keep_alive import keep_alive
-
-HOUSES_BASE = HOUSES_PART1 + HOUSES_PART2
 
 class RPCorporateBot(commands.Bot):
     def __init__(self):
@@ -26,50 +23,28 @@ class RPCorporateBot(commands.Bot):
         setup_economy_commands(self.tree)
         self.add_view(TicketControlView())
         self.add_view(DropdownView())
+        self.add_view(MainPropertyView()) # Регистрация меню имущества в памяти
         await self.tree.sync()
 
 bot = RPCorporateBot()
 
-# --- ТЕКСТОВАЯ КОМАНДА !настройка_домов (СОЗДАНИЕ КАНАЛА С КНОПКАМИ КУПИТЬ) ---
-@bot.command(name="настройка_домов", aliases=["домы", "домики"])
+# --- ТЕКСТОВАЯ КОМАНДА ВЫДАЧИ ЕДИНОГО РЕЕСТРА ИМУЩЕСТВА Г. АДРЕНАЛИН ---
+@bot.command(name="меню_имущества", aliases=["имущество", "реестр"])
 @commands.has_permissions(administrator=True)
-async def txt_setup_houses_final(ctx):
-    guild = ctx.guild
-    category_id = 1510757796591829114
-    category = guild.get_channel(category_id)
+async def txt_setup_property_registry(ctx):
+    embed = discord.Embed(
+        title="🏛️ ГОСУДАРСТВЕННЫЙ РЕЕСТР ИМУЩЕСТВА 🏛️",
+        description=(
+            f"**Единая база данных купли-продажи коммерческой и жилой недвижимости г. Адреналин.**\n\n"
+            f"🔹 Здесь вы можете изучить характеристики объектов из Emergency Hamburg и оставить заявку на покупку.\n\n"
+            f"👇 **Используйте выпадающее меню ниже, чтобы выбрать категорию:**"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_image(url="https://squarespace-cdn.com")
     
-    if not category or not isinstance(category, discord.CategoryChannel):
-        await ctx.send("❌ Ошибка: Указанная категория домов не найдена на сервере!")
-        return
-
-    status_msg = await ctx.send("⌛ **Запускаю выгрузку каталога недвижимости г. Адреналин, пожалуйста подождите...**")
-
-    try:
-        # Создаем обычный текстовый канал (работает со 100% стабильностью)
-        house_channel = await guild.create_text_channel(
-            name="🏡｜база-домов",
-            category=category,
-            topic="Официальный перечень жилой недвижимости г. Адреналин. Нажмите на зелёную кнопку под домом для покупки."
-        )
-        
-        await status_msg.edit(content=f"🟩 **Текстовый канал {house_channel.mention} успешно создан! Выгружаю 21 дом с кнопками купли-продажи...**")
-
-        for house in HOUSES_BASE:
-            embed = discord.Embed(
-                title=f"🏡 ОБЪЕКТ НЕДВИЖИМОСТИ: {house['name'].upper()}",
-                description=f"**Характеристики объекта:**\n\n💰 **Стоимость в игре:** `${int(house['price']):,}`\n🏷️ **Класс:** `{house['tags']}`\n\n📝 **Описание:**\n> *{house['desc']}*",
-                color=discord.Color.gold()
-            )
-            
-            # Подключаем к карточке дома персональную кнопку покупки
-            view = HouseButtonView(house["id"], house["name"], house["price"])
-            await house_channel.send(embed=embed, view=view)
-            await asyncio.sleep(1.2)
-
-        await ctx.send(f"✅ **Все 21 дом из Emergency Hamburg успешно выгружены с кнопками покупки в канал {house_channel.mention}!**")
-
-    except Exception as e:
-        await ctx.send(f"❌ Произошла ошибка при генерации: `{e}`")
+    await ctx.message.delete()
+    await ctx.send(embed=embed, view=MainPropertyView())
 
 # --- КОМАНДЫ ПРОФИЛЕЙ И ДОКУМЕНТОВ ---
 @bot.tree.command(name="настройка_меню")
