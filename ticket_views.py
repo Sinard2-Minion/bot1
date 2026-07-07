@@ -56,35 +56,38 @@ class SpecificObjectSelect(discord.ui.Select):
         
         if mode == "houses":
             for h in ALL_HOUSES:
-                options.append(discord.SelectOption(label=h["name"], value=h["id"], description=f"Цена: {h['price']}", emoji="🏡"))
+                options.append(discord.SelectOption(label=h["name"], value=h["id"], description=f"Цена: ${int(h['price']):,}", emoji="🏡"))
             placeholder_text = "Выберите номер дома для осмотра..."
         else:
             for b in BUSINESSES_BASE:
                 options.append(discord.SelectOption(label=b["name"], value=b["id"], description=f"Цена: ${int(b['price']):,}", emoji="💼"))
             placeholder_text = "Выберите предприятие для осмотра..."
 
-        super().__init__(placeholder=placeholder_text, min_values=1, max_values=1, options=options, custom_id="specific_obj_select")
+        super().__init__(placeholder=placeholder_text, min_values=1, max_values=1, options=options, custom_id=f"spec_select_{mode}")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        chosen_id = self.values
+        chosen_id = self.values[0]
         
         if self.mode == "houses":
-            item = next((h for h in ALL_HOUSES if h["id"] == chosen_id), None)
+            item = next((h for h in ALL_HOUSES if str(h["id"]) == str(chosen_id)), None)
             is_biz = False
         else:
-            item = next((b for b in BUSINESSES_BASE if b["id"] == chosen_id), None)
+            item = next((b for b in BUSINESSES_BASE if str(b["id"]) == str(chosen_id)), None)
             is_biz = True
 
-        if not item: return
+        if not item:
+            await interaction.followup.send("❌ Ошибка: Объект не найден в реестре штата!", ephemeral=True)
+            return
 
         embed_info = discord.Embed(title=f"📋 ИНФОРМАЦИОННАЯ КАРТОЧКА ОБЪЕКТА", color=discord.Color.blue())
-        price_val = item["price"] if "$" in item["price"] else f"${int(item['price']):,}"
-        embed_info.add_field(name="🏷️ Название:", value=f"**{item['name']}**", inline=False)
-        embed_info.add_field(name="💰 Фиксированная цена:", value=f"`{price_val}`", inline=True)
-        embed_info.add_field(name="📊 Класс:", value=f"`{item['tags']}`", inline=True)
+        price_val = item["price"] if "$" in str(item["price"]) else f"${int(item['price']):,}"
+        
+        embed_info.add_field(name="🏷️ Название объекта:", value=f"**{item['name']}**", inline=False)
+        embed_info.add_field(name="💰 Государственная цена:", value=f"`{price_val}`", inline=True)
+        embed_info.add_field(name="📊 Категория / Класс:", value=f"`{item['tags']}`", inline=True)
         embed_info.add_field(name="📝 РП-Описание и Спецификация:", value=f"> *{item['desc']}*", inline=False)
-        embed_info.set_footer(text="Вы можете нажать кнопку ниже, чтобы открыть тикет покупки.")
+        embed_info.set_footer(text="Нажмите кнопку ниже, чтобы открыть приватный тикет покупки с Департаментом Имущества.")
 
         view = discord.ui.View(timeout=120)
         view.add_item(TargetBuyButton(item["id"], item["name"], item["price"], is_biz))
