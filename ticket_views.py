@@ -1,11 +1,17 @@
 import discord
 import asyncio
 import random
+import os
 from datetime import datetime
-from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES, VERDICTS, HOUSES_PART1
-from ticket_config_part2 import HOUSES_PART2, BUSINESSES_BASE
+from PIL import Image, ImageDraw, ImageFont
+from ticket_config import AUDIT_LOG_CHANNEL_ID, MAX_ALLOWED_ROLE_ID, CATEGORIES, VERDICTS, HOUSES_PART1, HOUSE_MAP_COORDINATES
+from ticket_config_part2 import HOUSES_PART2, BUSINESSES_BASE, HOUSE_MAP_COORDINATES_PART2
 
 ALL_HOUSES = HOUSES_PART1 + HOUSES_PART2
+ALL_COORDINATES = {**HOUSE_MAP_COORDINATES, **HOUSE_MAP_COORDINATES_PART2}
+
+# Ссылка на ваше базовое изображение карты (чистый шаблон)
+MAP_TEMPLATE_URL = "https://ibb.co" 
 
 async def send_audit_log(guild, title, description, color):
     try:
@@ -15,6 +21,38 @@ async def send_audit_log(guild, title, description, color):
             embed.set_timestamp()
             await channel.send(embed=embed)
     except Exception as e: print(f"❌ Ошибка логов: {e}")
+
+# Функция динамической отрисовки статуса "Куплено" на РП-карте штата
+async def draw_sold_house_on_map(house_id: str) -> str:
+    import requests
+    from io import BytesIO
+    
+    output_filename = "updated_map.png"
+    coord = ALL_COORDINATES.get(str(house_id))
+    
+    try:
+        # Скачиваем чистый шаблон карты по прямой ссылке
+        response = requests.get(MAP_TEMPLATE_URL)
+        img = Image.open(BytesIO(response.content))
+        draw = ImageDraw.Draw(img)
+        
+        # Если координаты дома найдены — рисуем индикатор
+        if coord:
+            x, y = coord["x"], coord["y"]
+            # Рисуем красный полупрозрачный круг-маркер вокруг номера дома
+            draw.ellipse([x-20, y-20, x+20, y+20], fill=(255, 0, 0, 180), outline=(139, 0, 0), width=3)
+            
+            # Попытка загрузить красивый шрифт, иначе используем стандартный
+            try: font = ImageFont.load_default()
+            except: font = None
+                
+            draw.text((x-15, y-8), "SOLD", fill=(255, 255, 255), font=font)
+            
+        img.save(output_filename)
+        return output_filename
+    except Exception as e:
+        print(f"❌ Ошибка PIL отрисовки: {e}")
+        return None
 
 class TargetBuyButton(discord.ui.Button):
     def __init__(self, obj_id: str, obj_name: str, obj_price: str, is_business: bool = False):
@@ -67,7 +105,7 @@ class SpecificObjectSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        chosen_id = self.values[0]
+        chosen_id = self.values
         
         if self.mode == "houses":
             item = next((h for h in ALL_HOUSES if str(h["id"]) == str(chosen_id)), None)
@@ -136,16 +174,51 @@ class VerdictModal(discord.ui.Modal):
         clean_name = user.display_name.replace(" ", "_")
         signature = f"{clean_name[:1].upper()}.{clean_name.split('_')[-1][:10] if '_' in clean_name else clean_name[:10]} ✍️"
         doc_data = {"date": current_date, "number": doc_num, "signature": signature}
+        
         embed = discord.Embed(title="📜 ОФИЦИАЛЬНЫЙ РЕЕСТР ВЕРДИКТОВ", color=discord.Color.green())
         embed.add_field(name="📅 Дата выдачи:", value=f"`{current_date}`", inline=True)
         embed.add_field(name="🔢 Номер записи:", value=f"`№{doc_num}`", inline=True)
+        
+        house_num = None
         for inp in self.inputs:
             doc_data[inp.label] = inp.value
             embed.add_field(name=f"📝 {inp.label}:", value=f"**{inp.value}**", inline=False)
+            if "номер дома" in inp.label.lower():
+                house_num = str(inp.value).strip()
+
         embed.add_field(name="🖋️ Подпись должностного лица:", value=f"`{signature}`", inline=False)
-        if self.db_field and self.creator_id != 0: update_rp_status(self.creator_id, self.db_field, doc_data)
+        if self.db_field and self.creator_id != 0: 
+            update_rp_status(self.creator_id, self.db_field, doc_data)
+            
         await interaction.channel.send(embed=embed)
-        await asyncio.sleep(10)
+
+        # АВТОМАТИЧЕСКАЯ ОТРИСОВКА И ОБНОВЛЕНИЕ КАРТЫ НА СЕРВЕРЕ
+        if self.ticket_type == "Покупка недвижимости" and house_num:
+            await interaction.channel.send("🎨 *Генерирую обновленную карту жилого фонда города...*")
+            map_file_path = await draw_sold_house_on_map(house_num)
+            if map_file_path and os.path.exists(map_file_path):
+                map_embed = discord.Embed(
+                    title="🗺️ РЕЕСТР ИМУЩЕСТВА: ОБНОВЛЕННАЯ КАРТА ГОРОДА",
+                    description=f"Дом **№{house_num}** официально перешёл в частную собственность гражданина. Изменения зафиксированы на спутниковой схеме жилых кварталов.",
+                    color=discord.Color.red()
+                )
+                discord_file = discord.File(map_file_path, filename="map.png")
+                map_embed.set_image(url="attachment://map.png")
+                
+                # Отправляем карту как в текущий тикет, так и дублируем в логи аудита
+                await interaction.channel.send(embed=map_embed, file=discord_file)
+                
+                audit_channel = guild.get_channel(int(AUDIT_LOG_CHANNEL_ID))
+                if audit_channel:
+                    discord_file_audit = discord.File(map_file_path, filename="map_audit.png")
+                    audit_embed = discord.Embed(title="🗺️ Обновление карты недвижимости", description=f"Дом №{house_num} отмечен как проданный.", color=discord.Color.red())
+                    audit_embed.set_image(url="attachment://map_audit.png")
+                    await audit_channel.send(embed=audit_embed, file=discord_file_audit)
+                    
+                try: os.remove(map_file_path)
+                except: pass
+
+        await asyncio.sleep(15)
         await interaction.channel.delete()
 
 class TicketControlView(discord.ui.View):
