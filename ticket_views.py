@@ -11,7 +11,7 @@ ALL_HOUSES = HOUSES_PART1 + HOUSES_PART2
 ALL_COORDINATES = {**HOUSE_MAP_COORDINATES, **HOUSE_MAP_COORDINATES_PART2}
 
 # Ссылка на ваше базовое изображение карты (чистый шаблон)
-MAP_TEMPLATE_URL = "https://ibb.co" 
+MAP_TEMPLATE_URL = "https://i.postimg.cc/L8yh47fz/54e6f2be-e010-4d2a-9e8f-028a746e965c.png" 
 
 async def send_audit_log(guild, title, description, color):
     try:
