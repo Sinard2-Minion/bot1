@@ -35,6 +35,148 @@ async def save_ticket_transcript(channel: discord.TextChannel, author_mention: s
             f.write(f"Тип заявления: {ticket_type}\n")
             f.write(f"Дата выгрузки: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
             f.write(f"==================================================\n\n")
+class PropertyCategorySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Жилая недвижимость (Дома)", value="cat_houses", description="Каталог из 21 дома в г. Адреналин", emoji="🏡"),
+            discord.SelectOption(label="Коммерческие предприятия (Бизнесы)", value="cat_biz", description="Покупка заправок, автосалонов, магазинов", emoji="💼")
+        ]
+        super().__init__(placeholder="Выберите тип интересующего имущества...", min_values=1, max_values=1, options=options, custom_id="prop_cat_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen_cat = self.values
+        view = discord.ui.View(timeout=None)
+        if chosen_cat == "cat_houses":
+            view.add_item(SpecificObjectSelect("houses"))
+            msg = "⬇️ **Реестр жилого фонда обновлен. Выберите необходимый ДОМ в меню ниже:**"
+        else:
+            view.add_item(SpecificObjectSelect("businesses"))
+            msg = "⬇️ **Реестр коммерции обновлен. Выберите необходимый БИЗНЕС в меню ниже:**"
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
+
+class MainPropertyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(PropertyCategorySelect())
+
+class VerdictModal(discord.ui.Modal):
+    def __init__(self, ticket_type: str, creator_id: int):
+        super().__init__(title="Заполнение реестра")
+        self.ticket_type, self.creator_id = ticket_type, creator_id
+        v_cfg = VERDICTS.get(ticket_type, {"fields": [{"label": "РП-Примечание", "placeholder": "Текст..."}], "db_field": None})
+        self.db_field = v_cfg.get("db_field")
+        self.inputs = []
+        for idx, f_info in enumerate(v_cfg.get("fields", [])):
+            txt_input = discord.ui.TextInput(label=f_info["label"][:45], placeholder=f_info["placeholder"][:100], required=True, max_length=100, custom_id=f"v_f_{idx}")
+            self.inputs.append(txt_input)
+            self.add_item(txt_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from database import update_rp_status
+        guild, user = interaction.guild, interaction.user
+        current_date, doc_num = datetime.now().strftime("%d.%m.%Y"), f"{random.randint(10, 99)} {random.randint(1000, 9999)}"
+        clean_name = user.display_name.replace(" ", "_")
+        signature = f"{clean_name[:1].upper()}.{clean_name.split('_')[-1][:10] if '_' in clean_name else clean_name[:10]} ✍️"
+        doc_data = {"date": current_date, "number": doc_num, "signature": signature}
+        
+        embed = discord.Embed(title="📜 ОФИЦИАЛЬНЫЙ РЕЕСТР ВЕРДИКТОВ", color=discord.Color.green())
+        embed.add_field(name="📅 Дата выдачи:", value=f"`{current_date}`", inline=True)
+        embed.add_field(name="🔢 Номер записи:", value=f"`№{doc_num}`", inline=True)
+        
+        house_num = None
+        for inp in self.inputs:
+            doc_data[inp.label] = inp.value
+            embed.add_field(name=f"📝 {inp.label}:", value=f"**{inp.value}**", inline=False)
+            if "номер дома" in inp.label.lower():
+                house_num = str(inp.value).strip()
+
+        embed.add_field(name="🖋️ Подпись должностного лица:", value=f"`{signature}`", inline=False)
+        if self.db_field and self.creator_id != 0: 
+            update_rp_status(self.creator_id, self.db_field, doc_data)
+            
+        await interaction.channel.send(embed=embed)
+
+        if self.ticket_type == "Покупка недвижимости" and house_num:
+            await interaction.channel.send("🎨 *Генерирую обновленную карту жилого фонда города...*")
+            map_file_path = await draw_sold_house_on_map(house_num)
+            if map_file_path and os.path.exists(map_file_path):
+                map_embed = discord.Embed(
+                    title="🗺️ РЕЕСТР ИМУЩЕСТВА: ОБНОВЛЕННАЯ КАРТА ГОРОДА",
+                    description=f"Дом **№{house_num}** официально перешёл в частную собственность гражданина. Изменения зафиксированы на спутниковой схеме жилых кварталов.",
+                    color=discord.Color.red()
+                )
+                discord_file = discord.File(map_file_path, filename="map.png")
+                map_embed.set_image(url="attachment://map.png")
+                await interaction.channel.send(embed=map_embed, file=discord_file)
+                
+                audit_channel = guild.get_channel(int(AUDIT_LOG_CHANNEL_ID))
+                if audit_channel:
+                    discord_file_audit = discord.File(map_file_path, filename="map_audit.png")
+                    audit_embed = discord.Embed(title="🗺️ Обновление карты недвижимости", description=f"Дом №{house_num} отмечен как проданный.", color=discord.Color.red())
+                    audit_embed.set_image(url="attachment://map_audit.png")
+                    await audit_channel.send(embed=audit_embed, file=discord_file_audit)
+                    
+                try: os.remove(map_file_path)
+                except: pass
+
+        creator = guild.get_member(self.creator_id)
+        c_mention = creator.mention if creator else f"ID: {self.creator_id}"
+        await interaction.channel.send("💾 *Сохраняю историю переписки и выгружаю транскрипт...*")
+        await save_ticket_transcript(interaction.channel, c_mention, self.ticket_type)
+
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+class TicketControlView(discord.ui.View):
+    def __init__(self, ticket_type: str = "Неизвестно", creator_id: int = 0):
+        super().__init__(timeout=None)
+        self.ticket_type, self.creator_id = ticket_type, creator_id
+
+    def has_mod_permission(self, member: discord.Member) -> bool:
+        if member.guild_permissions.administrator: return True
+        cfg = CATEGORIES.get(self.ticket_type, {"role_id": 1523079704007934123})
+        return bool(cfg and member.get_role(int(cfg["role_id"])))
+
+    @discord.ui.button(label="📥 Взять в работу", style=discord.ButtonStyle.primary, custom_id="take_ticket_btn")
+    async def take_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user): return
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send(f"⏳ Сотрудник {interaction.user.mention} взял дело на рассмотрение.")
+
+    @discord.ui.button(label="🟢 Одобрить", style=discord.ButtonStyle.success, custom_id="approve_ticket_btn")
+    async def approve_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user): return
+        await interaction.response.send_modal(VerdictModal(self.ticket_type, self.creator_id))
+
+    @discord.ui.button(label="🔴 Отклонить", style=discord.ButtonStyle.secondary, custom_id="deny_ticket_btn")
+    async def deny_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user): return
+        await interaction.response.defer()
+        guild = interaction.guild
+        creator = guild.get_member(self.creator_id)
+        c_mention = creator.mention if creator else f"ID: {self.creator_id}"
+        
+        await interaction.channel.send("❌ **Сделка / Заявление ОТКЛОНЕНО.**\n💾 *Выгружаю транскрипт перед удалением канала...*")
+        await save_ticket_transcript(interaction.channel, c_mention, self.ticket_type)
+        
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+    @discord.ui.button(label="🔒 Закрыть", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.has_mod_permission(interaction.user): return
+        await interaction.response.defer()
+        guild = interaction.guild
+        creator = guild.get_member(self.creator_id)
+        c_mention = creator.mention if creator else f"ID: {self.creator_id}"
+        
+        await interaction.channel.send("🔒 **Тикет принудительно закрывается.**\n💾 *Выгружаю транскрипт перед удалением канала...*")
+        await save_ticket_transcript(interaction.channel, c_mention, self.ticket_type)
+        
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
 
             messages = []
             async for msg in channel.history(limit=500, oldest_first=True):
