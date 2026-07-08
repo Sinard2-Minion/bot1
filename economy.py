@@ -1,90 +1,81 @@
 import discord
 from discord import app_commands
-import random
 from database import get_user_data, update_balance
 
+async def give_money_to_role_logic(guild: discord.Guild, role: discord.Role, amount: int, mode: str = "cash") -> int:
+    counter = 0
+    for member in role.members:
+        if member.bot: continue
+        u_data = get_user_data(member.id)
+        if mode == "cash":
+            new_cash = u_data["cash"] + amount
+            update_balance(member.id, new_cash, u_data["bank"])
+        else:
+            new_bank = u_data["bank"] + amount
+            update_balance(member.id, u_data["cash"], new_bank)
+        counter += 1
+    return counter
+
 def setup_economy_commands(tree: app_commands.CommandTree):
-
-    @tree.command(name="баланс", description="Проверить свой текущий баланс денег")
-    async def balance(interaction: discord.Interaction, пользователь: discord.Member = None):
-        target = пользователь or interaction.user
-        u_data = get_user_data(target.id)
-        
-        embed = discord.Embed(title=f"💰 Баланс {target.display_name}", color=discord.Color.green())
-        embed.add_field(name="💵 Наличные:", value=f"${u_data['cash']}", inline=False)
-        embed.add_field(name="🏦 В банке:", value=f"${u_data['bank']}", inline=False)
-        embed.add_field(name="💳 Всего:", value=f"${u_data['cash'] + u_data['bank']}", inline=False)
-        await interaction.response.send_message(embed=embed)
-
-    @tree.command(name="депозит", description="Положить наличные деньги в банк")
-    async def deposit(interaction: discord.Interaction, сумма: int):
-        u_data = get_user_data(interaction.user.id)
+    
+    @tree.command(name="выдать_роли", description="[Админ] Выдать деньги всем участникам с определенной ролью")
+    @app_commands.choices(тип_счета=[
+        app_commands.Choice(name="💵 Наличные", value="cash"),
+        app_commands.Choice(name="🏦 Банковский счет", value="bank")
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def give_money_to_role_slash(interaction: discord.Interaction, роль: discord.Role, сумма: int, тип_счета: app_commands.Choice[str]):
+        await interaction.response.defer(ephemeral=True)
         if сумма <= 0:
-            await interaction.response.send_message("❌ Сумма должна быть больше нуля!", ephemeral=True)
+            await interaction.followup.send("❌ Сумма должна быть больше нуля!", ephemeral=True)
             return
-        if u_data["cash"] < сумма:
-            await interaction.response.send_message("❌ У вас нет столько наличных денег!", ephemeral=True)
-            return
+        guild = interaction.guild
+        mode = тип_счета.value
+        total_payed = await give_money_to_role_logic(guild, роль, suma, mode)
+        account_name = "наличные" if mode == "cash" else "банковский счет"
         
-        update_balance(interaction.user.id, -сумма, "cash")
-        update_balance(interaction.user.id, сумма, "bank")
-        await interaction.response.send_message(f"🏦 Вы успешно положили **${сумма}** на банковский счет.")
+        if total_payed == 0:
+            await interaction.followup.send(f"⚠️ У роли {роль.mention} нет участников, деньги никому не начислены.", ephemeral=True)
+            return
 
-    @tree.command(name="снять", description="Снять деньги с банковского счета")
-    async def withdraw(interaction: discord.Interaction, сумма: int):
-        u_data = get_user_data(interaction.user.id)
+        embed = discord.Embed(
+            title="🏛️ ГОСУДАРСТВЕННОЕ ФИНАНСИРОВАНИЕ",
+            description=(
+                f"Правительство г. Адреналин произвело массовую выплату средств!\n\n"
+                f"👥 **Ведомство/Роль:** {роль.mention}\n"
+                f"💵 **Сумма на человека:** `${сумма:,}`\n"
+                f"🏦 **Куда зачислено:** `{account_name}`\n"
+                f"📊 **Всего сотрудников получило:** `{total_payed}`"
+            ),
+            color=discord.Color.green()
+        )
+        embed.set_timestamp()
+        await interaction.channel.send(embed=embed)
+        await interaction.followup.send(f"✅ Успешно начислено по ${сумма:,} для {total_payed} участников роли {роль.name}!", ephemeral=True)
+
+    @tree.command(name="выдать_деньги", description="[Админ] Выдать РП-деньги конкретному пользователю")
+    @app_commands.choices(тип_счета=[
+        app_commands.Choice(name="💵 Наличные", value="cash"),
+        app_commands.Choice(name="🏦 Банковский счет", value="bank")
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def give_money_slash(interaction: discord.Interaction, пользователь: discord.Member, сумма: int, тип_счета: app_commands.Choice[str]):
+        await interaction.response.defer(ephemeral=True)
         if сумма <= 0:
-            await interaction.response.send_message("❌ Сумма должна быть больше нуля!", ephemeral=True)
-            return
-        if u_data["bank"] < сумма:
-            await interaction.response.send_message("❌ На вашем банковском счете нет столько денег!", ephemeral=True)
-            return
-        
-        update_balance(interaction.user.id, сумма, "cash")
-        update_balance(interaction.user.id, -сумма, "bank")
-        await interaction.response.send_message(f"💵 Вы успешно сняли **${сумма}** наличными.")
-
-    @tree.command(name="работа", description="Пойти на безопасную работу")
-    @app_commands.checks.cooldown(1, 1800, key=lambda i: (i.user.id))
-    async def work(interaction: discord.Interaction):
-        reward = random.randint(150, 400)
-        jobs = ["курьером", "офисным клерком", "водителем автобуса", "программистом", "автомехаником", "поваром"]
-        update_balance(interaction.user.id, reward, "cash")
-        await interaction.response.send_message(f"👔 Вы отработали смену **{random.choice(jobs)}** и заработали **${reward}**.")
-
-    @tree.command(name="криминал", description="Совершить серьезное преступление (Высокий риск)")
-    @app_commands.checks.cooldown(1, 10800, key=lambda i: (i.user.id))
-    async def crime(interaction: discord.Interaction):
-        if random.randint(1, 100) <= 55:
-            fine = random.randint(500, 1000)
-            update_balance(interaction.user.id, -fine, "cash")
-            await interaction.response.send_message(f"🚨 Ограбление пошло не по плану! Спецназ зажал вас в углу. Суд выписал штраф **${fine}**.")
-        else:
-            reward = random.randint(800, 2000)
-            update_balance(interaction.user.id, reward, "cash")
-            await interaction.response.send_message(f"💰 Вы успешно взломали банкомат на окраине города и унесли куш в размере **${reward}**!")
-
-    @tree.command(name="ограбить", description="Ограбить другого игрока (Украсть наличные)")
-    @app_commands.checks.cooldown(1, 21600, key=lambda i: (i.user.id))
-    async def rob(interaction: discord.Interaction, жертва: discord.Member):
-        if  жертва.id == interaction.user.id:
-            await interaction.response.send_message("❌ Вы не можете ограбить самого себя!", ephemeral=True)
+            await interaction.followup.send("❌ Сумма должна быть больше нуля!", ephemeral=True)
             return
             
-        victim_data = get_user_data(жертва.id)
-        if victim_data["cash"] < 200:
-            await interaction.response.send_message(f"❌ У {жертва.display_name} слишком мало наличных денег в кармане. Грабить нечего!", ephemeral=True)
-            return
-
-        if random.randint(1, 100) <= 50:
-            fine = 500
-            update_balance(interaction.user.id, -fine, "cash")
-            update_balance(жертва.id, fine, "cash")
-            await interaction.response.send_message(f"👮‍♂️ {жертва.mention} поймал вас за руку во время кражи! Вы выплатили ему компенсацию **$500**.")
+        u_data = get_user_data(пользователь.id)
+        mode = тип_счета.value
+        
+        if mode == "cash":
+            new_cash = u_data["cash"] + сумма
+            update_balance(пользователь.id, new_cash, u_data["bank"])
+            msg = f"🟩 Администратор выдал **${сумма:,}** наличными игроку {пользователь.mention}!"
         else:
-            percent = random.randint(20, 50)
-            stolen_amount = int(victim_data["cash"] * (percent / 100))
+            new_bank = u_data["bank"] + сумма
+            update_balance(пользователь.id, u_data["cash"], new_bank)
+            msg = f"🟩 Администратор начислил **${сумма:,}** на банковский счет игрока {пользователь.mention}!"
             
-            update_balance(жертва.id, -stolen_amount, "cash")
-            update_balance(interaction.user.id, stolen_amount, "cash")
-            await interaction.response.send_message(f"🥷 Вы незаметно вытащили кошелек у {жертва.mention} и украли **${stolen_amount}** ({percent}% от его наличных)!")
+        await interaction.channel.send(msg)
+        await interaction.followup.send("✅ Баланс игрока успешно обновлен!", ephemeral=True)
