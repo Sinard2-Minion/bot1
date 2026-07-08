@@ -2,6 +2,14 @@ import discord
 from discord import app_commands
 from database import get_user_data, update_balance
 
+ADMIN_ROLE_ID = 1524372208791851191
+
+def is_admin_check(interaction: discord.Interaction) -> bool:
+    if interaction.user.guild_permissions.administrator:
+        return True
+    role = interaction.guild.get_role(ADMIN_ROLE_ID)
+    return bool(role and role in interaction.user.roles)
+
 async def give_money_to_role_logic(guild: discord.Guild, role: discord.Role, amount: int, mode: str = "cash") -> int:
     counter = 0
     for member in role.members:
@@ -23,15 +31,18 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         app_commands.Choice(name="💵 Наличные", value="cash"),
         app_commands.Choice(name="🏦 Банковский счет", value="bank")
     ])
-    @app_commands.checks.has_permissions(administrator=True)
     async def give_money_to_role_slash(interaction: discord.Interaction, роль: discord.Role, сумма: int, тип_счета: app_commands.Choice[str]):
+        if not is_admin_check(interaction):
+            await interaction.response.send_message("❌ У вас нет прав для использования этой команды!", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if сумма <= 0:
             await interaction.followup.send("❌ Сумма должна быть больше нуля!", ephemeral=True)
             return
         guild = interaction.guild
         mode = тип_счета.value
-        total_payed = await give_money_to_role_logic(guild, роль, suma, mode)
+        total_payed = await give_money_to_role_logic(guild, роль, сумма, mode)
         account_name = "наличные" if mode == "cash" else "банковский счет"
         
         if total_payed == 0:
@@ -58,8 +69,11 @@ def setup_economy_commands(tree: app_commands.CommandTree):
         app_commands.Choice(name="💵 Наличные", value="cash"),
         app_commands.Choice(name="🏦 Банковский счет", value="bank")
     ])
-    @app_commands.checks.has_permissions(administrator=True)
     async def give_money_slash(interaction: discord.Interaction, пользователь: discord.Member, сумма: int, тип_счета: app_commands.Choice[str]):
+        if not is_admin_check(interaction):
+            await interaction.response.send_message("❌ У вас нет прав для использования этой команды!", ephemeral=True)
+            return
+            
         await interaction.response.defer(ephemeral=True)
         if сумма <= 0:
             await interaction.followup.send("❌ Сумма должна быть больше нуля!", ephemeral=True)
