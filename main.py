@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 
 from tickets import DropdownView
 from ticket_views import TicketControlView, MainPropertyView
-from economy import setup_economy_commands
-from database import get_user_data, update_balance, update_medical_status, update_rp_status
+from economy import setup_economy_commands, ADMIN_ROLE_ID
+from database import get_user_data, update_balance, update_medical_status
 from doc_renderer import build_doc_embed
 from ticket_config import HOUSES_PART1
 from ticket_config_part2 import HOUSES_PART2
@@ -21,7 +21,7 @@ class RPCorporateBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        intents.guilds = True  # Обязательно для создания Discord-событий (Scheduled Events)
+        intents.guilds = True
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
@@ -33,92 +33,77 @@ class RPCorporateBot(commands.Bot):
 
 bot = RPCorporateBot()
 
-# --- СЛЭШ-КОМАНДА: УПРАВЛЕНИЕ НЕДВИЖИМОСТЬЮ (ОТМЕНА / АУКЦИОН С СОБЫТИЕМ) ---
+def has_admin_role_txt(ctx) -> bool:
+    if ctx.author.guild_permissions.administrator: return True
+    role = ctx.guild.get_role(ADMIN_ROLE_ID)
+    return bool(role and role in ctx.author.roles)
+
 @bot.tree.command(name="дом_управление", description="[Мэрия] Управление РП-статусом жилого фонда")
 @app_commands.choices(действие=[
     app_commands.Choice(name="❌ Аннулировать покупку (Освободить дом)", value="cancel"),
     app_commands.Choice(name="🔨 Назначить аукцион и создать событие", value="auction")
 ])
-@app_commands.checks.has_permissions(administrator=True)
 async def house_manage_slash(interaction: discord.Interaction, действие: app_commands.Choice[str], номер_дома: str):
+    role = interaction.guild.get_role(ADMIN_ROLE_ID)
+    if not (interaction.user.guild_permissions.administrator or (role and role in interaction.user.roles)):
+        await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        return
+        
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
     house_id = номер_дома.strip()
-    
-    # Ищем дом в базе
     house = next((h for h in HOUSES_BASE if str(h["id"]) == house_id), None)
+    
     if not house:
-        await interaction.followup.send("❌ Ошибка: Дом с таким номером не найден в базе г. Адреналин!", ephemeral=True)
+        await interaction.followup.send("❌ Дом не найден!", ephemeral=True)
         return
 
     if действие.value == "cancel":
-        # Сбрасываем статус в базе данных (база данных обнуляет владельца по house_owned)
-        # Для демонстрации очищаем РП-статус канала. В реальной РП-БД тут идет сброс привязки ID.
-        await interaction.followup.send(f"✅ Успешно! Регистрация владения для **Дома №{house_id}** аннулирована. Объект возвращен в гос. собственность.", ephemeral=True)
-        await interaction.channel.send(f"🏛️ **[Департамент Имущества]** По решению Мэрии **Дом №{house_id}** был принудительно изъят за долги / нарушения и теперь снова свободен для покупки!")
-
+        await interaction.followup.send(f"✅ Владение домом №{house_id} аннулировано.", ephemeral=True)
+        await interaction.channel.send(f"🏛️ **[Департамент Имущества]** Дом №{house_id} возвращен в гос. собственность!")
     elif действие.value == "auction":
-        # 1. Генерируем красивый информационный Embed в чат
-        embed = discord.Embed(
-            title="🔨 ОФИЦИАЛЬНЫЙ ГОСУДАРСТВЕННЫЙ АУКЦИОН",
-            description=f"Департамент Имущества выставляет на открытые торги изъятую недвижимость!\n\n🏡 **Лот:** `{house['name']}`\n💰 **Стартовая цена:** `${int(house['price']):,}`\n📊 **Класс:** `{house['tags']}`\n\n*Нажмите «Интересует» в официальном событии сервера, чтобы не пропустить начало торгов!*",
-            color=discord.Color.red()
-        )
+        embed = discord.Embed(title="🔨 ОФИЦИАЛЬНЫЙ ГОСУДАРСТВЕННЫЙ АУКЦИОН", description=f"Лот: `{house['name']}`\n💰 Стартовая цена: `${int(house['price']):,}`", color=discord.Color.red())
         await interaction.channel.send(embed=embed)
-
-        # 2. АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ОФИЦИАЛЬНОГО ДИСКОРД-СОБЫТИЯ (EVENT)
-        start_time = datetime.now(datetime.utcnow().astimezone().tzinfo) + timedelta(hours=2) # Старт через 2 часа
+        start_time = datetime.now(datetime.utcnow().astimezone().tzinfo) + timedelta(hours=2)
         try:
-            event = await guild.create_scheduled_event(
-                name=f"🔨 РП-Аукцион: Дом №{house_id}",
-                description=f"Государственные торги за {house['name']}. Стартовая цена: ${int(house['price']):,}. Место проведения: Мэрия г. Адреналин.",
-                start_time=start_time,
-                entity_type=discord.GuildScheduledEventEntityType.external,
-                location=f"📍 Мэрия (Канал {interaction.channel.name})"
-            )
-            await interaction.followup.send(f"🟩 Успешно! Объявлен аукцион и автоматически создано событие сервера: **{event.url}**", ephemeral=True)
+            event = await guild.create_scheduled_event(name=f"🔨 Аукцион: Дом №{house_id}", description=f"Старт: ${int(house['price']):,}", start_time=start_time, entity_type=discord.GuildScheduledEventEntityType.external, location=f"📍 Мэрия ({interaction.channel.name})")
+            await interaction.followup.send(f"🟩 Создано событие: {event.url}", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"⚠️ Текст отправлен, но не удалось создать событие в Дискорде. Проверьте права бота (Управление Событиями)! Ошибка: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Событие не создано. Ошибка: `{e}`", ephemeral=True)
 
-# --- СЛЭШ-КОМАНДА: КОНСТРУКТОР ЭМБЕДОВ (/эмбед) ---
 @bot.tree.command(name="эмбед", description="Создать красивое информационное объявление (Embed)")
-@app_commands.checks.has_permissions(administrator=True)
-async def create_embed_slash(
-    interaction: discord.Interaction, 
-    заголовок: str, 
-    описание: str, 
-    картинка: str = None, 
-    цвет_hex: str = "3498db"
-):
+async def create_embed_slash(interaction: discord.Interaction, заголовок: str, описание: str, картинка: str = None, цвет_hex: str = "3498db"):
+    role = interaction.guild.get_role(ADMIN_ROLE_ID)
+    if not (interaction.user.guild_permissions.administrator or (role and role in interaction.user.roles)):
+        await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        return
+        
     await interaction.response.defer(ephemeral=True)
-    
-    # Конвертируем HEX цвет в формат discord.Color
     try: color_int = int(цвет_hex.replace("#", ""), 16)
     except: color_int = 0x3498db
     
-    embed = discord.Embed(title=заголовок, description=описание.replace("\\n", "\n"), color=discord.Color(color_int))
-    embed.set_footer(text=f"Опубликовано: {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+    embed = discord.Embed(title= заголовок, description=описание.replace("\\n", "\n"), color=discord.Color(color_int))
+    embed.set_footer(text=f"Автор: {interaction.user.display_name}")
     embed.set_timestamp()
-    
     if картинка and (картинка.startswith("http://") or картинка.startswith("https://")):
         embed.set_image(url=картинка)
-        
-    # Отправляем эмбед прямо в текущий текстовый канал
     await interaction.channel.send(embed=embed)
-    await interaction.followup.send("✅ Объявление успешно опубликовано в канале!", ephemeral=True)
+    await interaction.followup.send("✅ Опубликовано!", ephemeral=True)
 
-# --- ЕДИНЫЙ ЦЕНТР ГОСУСЛУГ И ОСТАЛЬНЫЕ КОМАНДЫ ---
 @bot.command(name="меню_имущества", aliases=["имущество", "реестр"])
-@commands.has_permissions(administrator=True)
 async def txt_setup_property_registry(ctx):
-    embed = discord.Embed(title="🏛️ ГОСУДАРСТВЕННЫЙ РЕЕСТР ИМУЩЕСТВА 🏛️", description="Единая база данных купли-продажи коммерческой и жилой недвижимости г. Адреналин.\n\n👇 **Используйте выпадающее меню ниже, чтобы выбрать категорию:**", color=discord.Color.blue())
+    if not has_admin_role_txt(ctx): return
+    embed = discord.Embed(title="🏛️ ГОСУДАРСТВЕННЫЙ РЕЕСТР ИМУЩЕСТВА 🏛️", description="Единая база данных купли-продажи коммерческой и жилой недвижимости г. Адреналин.\n\n👇 **Используйте меню ниже для выбора категории:**", color=discord.Color.blue())
     embed.set_image(url="https://squarespace-cdn.com")
     await ctx.message.delete()
     await ctx.send(embed=embed, view=MainPropertyView())
 
 @bot.tree.command(name="настройка_меню")
-@app_commands.checks.has_permissions(administrator=True)
 async def setup_menu_slash(interaction: discord.Interaction):
+    role = interaction.guild.get_role(ADMIN_ROLE_ID)
+    if not (interaction.user.guild_permissions.administrator or (role and role in interaction.user.roles)):
+        await interaction.response.send_message("❌ Недостаточно прав!", ephemeral=True)
+        return
     embed = discord.Embed(title="🏛️ ГОСУДАРСТВЕННЫЙ ЦЕНТР УСЛУГ 🏛️", description="Выберите необходимый тип заявления в меню ниже:", color=discord.Color.gold())
     await interaction.response.send_message("Готово!", ephemeral=True)
     await interaction.channel.send(embed=embed, view=DropdownView())
@@ -150,11 +135,11 @@ async def show_doc_slash(interaction: discord.Interaction, документ: app
         await interaction.followup.send("❌ Документ отсутствует!", ephemeral=True)
         return
     await interaction.followup.send("✅ Вы показали документ", ephemeral=True)
-    await interaction.channel.send(f"👤 {interaction.user.mention} показал документ {commу.mention}:", embed=embed)
+    await interaction.channel.send(f"👤 {interaction.user.mention} показал документ {кому.mention}:", embed=embed)
 
 @bot.command(name="меню", aliases=["тикет", "панель"])
-@commands.has_permissions(administrator=True)
 async def txt_setup_menu_fixed(ctx):
+    if not has_admin_role_txt(ctx): return
     embed = discord.Embed(title="🏛️ ГОСУДАРСТВЕННЫЙ ЦЕНТР УСЛУГ 🏛️", description="Выберите необходимый тип заявления:", color=discord.Color.gold())
     await ctx.message.delete()
     await ctx.send(embed=embed, view=DropdownView())
